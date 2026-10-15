@@ -1,0 +1,48 @@
+# Secrets and local credentials
+.env
+*.token
+kaggle.json
+.kaggle/
+.ngc/
+
+# Local environments and caches
+.venv/
+.venvs/
+.cache/
+containers/
+
+# Large or generated artifacts
+data/
+weights/
+inputs/
+outputs/
+submissions/
+logs/
+
+# License-gated body/hand models -- never commit (MANO, SMPL, SOMA)
+mano/
+body_models/
+*.pkl
+
+# Official third-party checkouts and extracted release artifacts
+official/
+third_party/
+
+# Isaac Lab / Omniverse run output
+runs/
+*.usda
+*.usdc
+*.hdf5
+*.parquet
+*.mp4
+
+# Python/editor noise
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.idea/
+.vscode/
+
+# Scratch and debug outputs
+tmp/
