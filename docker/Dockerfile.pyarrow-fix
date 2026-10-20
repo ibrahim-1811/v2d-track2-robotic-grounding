@@ -1,0 +1,31 @@
+# Fix for the pyarrow/numpy conflict in robotic-grounding:latest.
+#
+# Problem (see docs/SETUP_AUDIT.md §20):
+#   upstream workflow/Dockerfile pins "numpy<2.0.0" (deliberate — Isaac Lab needs it),
+#   then installs the project editable, which pulls pyarrow UNPINNED. Today that
+#   resolves to pyarrow 26.0.0, whose compiled lib.pyx hard-requires numpy >= 2.0.
+#   Result: `import pyarrow` fails, so robotic_grounding.motion_schema cannot load
+#   and every task import dies.
+#
+# Measured boundary (Python 3.11 + numpy 1.26.4):
+#   pyarrow <= 25.0.1  imports fine
+#   pyarrow == 26.0.0  ImportError: pyarrow requires NumPy 2.0 or newer
+#
+# This is a thin derived layer, not a 30 GB rebuild, and it does not modify the
+# upstream checkout. The permanent fix upstream is to pin "pyarrow<26" alongside
+# the existing "numpy<2.0.0" line in robotic_grounding/workflow/Dockerfile.
+#
+# Build:
+#   docker build -f docker/Dockerfile.pyarrow-fix -t robotic-grounding:latest .
+ARG BASE=robotic-grounding:pre-pyarrow-fix
+FROM ${BASE}
+
+# numpy is re-pinned in the same transaction so the resolver cannot drag it to 2.x.
+RUN ${ISAACLAB_PATH}/isaaclab.sh -p -m pip install --no-cache-dir \
+      "numpy<2.0.0" \
+      "pyarrow==25.0.1" \
+ && ${ISAACLAB_PATH}/isaaclab.sh -p -c "\
+import numpy, pyarrow, pyarrow.parquet; \
+assert numpy.__version__.startswith('1.'), numpy.__version__; \
+assert int(pyarrow.__version__.split('.')[0]) < 26, pyarrow.__version__; \
+print('pyarrow', pyarrow.__version__, 'OK with numpy', numpy.__version__)"
