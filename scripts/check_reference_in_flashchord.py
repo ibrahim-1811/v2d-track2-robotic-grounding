@@ -21,6 +21,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expect-frames", type=int, default=None)
     parser.add_argument("--control-fps", type=float, default=50.0)
     parser.add_argument(
+        "--expect-support-shapes",
+        type=int,
+        default=None,
+        help=(
+            "Fail unless the support stage declares exactly this many "
+            "Cylinder/Cube collision shapes. The orchestrator passes the count "
+            "its own host-side text scan produced, so the scene.support "
+            "decision is backed by two independent implementations instead of "
+            "one. A disagreement means the decision is unsound and is reported, "
+            "not reconciled."
+        ),
+    )
+    parser.add_argument(
         "--include-support",
         choices=("auto", "true", "false"),
         default="auto",
@@ -34,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_include_support(args, reference) -> bool:
+def _resolve_include_support(args, reference) -> tuple[bool, int]:
     """Decide whether this sequence has a usable support surface.
 
     ``add_support_surfaces`` raises when a reconstructed_stage USDA declares no
@@ -42,15 +55,13 @@ def _resolve_include_support(args, reference) -> bool:
     (2 of 3 whole_body sequences), so 'auto' inspects the stage instead of
     assuming every sequence has a support surface.
     """
-    if args.include_support != "auto":
-        return args.include_support == "true"
-
     from flash_chord.assets.registry import support_usda_for_reference
 
     path = support_usda_for_reference(reference)
     if path is None:
         print("  support usda    : none found")
-        return False
+        print("SUPPORT_SHAPES=0")
+        return (args.include_support == "true"), 0
     try:
         from pxr import Usd
 
@@ -60,11 +71,18 @@ def _resolve_include_support(args, reference) -> bool:
             for prim in stage.Traverse()
             if prim.GetTypeName() in ("Cylinder", "Cube")
         ]
-    except Exception as error:  # noqa: BLE001 - treat an unreadable stage as absent
+    except Exception as error:  # noqa: BLE001 - an unreadable stage is a failure,
+        # not a quiet "no support": the count is unknown, so say so.
         print("  support usda    : {} (unreadable: {})".format(path, error))
-        return False
-    print("  support usda    : {} ({} collision shapes)".format(path, len(shapes)))
-    return bool(shapes)
+        print("SUPPORT_SHAPES=-1")
+        return (args.include_support == "true"), -1
+    count = len(shapes)
+    print("  support usda    : {} ({} collision shapes)".format(path, count))
+    # Parsed by scripts/run_tier_pipeline.py; keep the exact spelling.
+    print("SUPPORT_SHAPES={}".format(count))
+    if args.include_support != "auto":
+        return args.include_support == "true", count
+    return bool(shapes), count
 
 
 def main() -> int:
@@ -107,8 +125,18 @@ def main() -> int:
 
     del instantiate_typed, Embodiment  # imported to mirror the official entrypoints
 
-    include_support = _resolve_include_support(args, reference)
+    include_support, support_shapes = _resolve_include_support(args, reference)
     print("  include_support : {}".format(include_support))
+    print("INCLUDE_SUPPORT={}".format(str(include_support).lower()))
+    if args.expect_support_shapes is not None and support_shapes != args.expect_support_shapes:
+        print(
+            "FAIL: the stage declares {} Cylinder/Cube collision shapes, the "
+            "caller expected {}. The host-side scan and this USD parse disagree, "
+            "so the scene.support decision is not trustworthy.".format(
+                support_shapes, args.expect_support_shapes
+            )
+        )
+        return 1
 
     embodiment = G1Dex3(config=G1Dex3Config())
     collision = CollisionPolicy(
