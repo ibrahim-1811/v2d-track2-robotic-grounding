@@ -51,7 +51,7 @@ pytestmark = pytest.mark.skipif(
     not REFERENCE.is_file(),
     reason=(
         "needs Episode 0's retargeted reference; run "
-        "scripts/run_tier_pipeline.py retarget --episodes 0"
+        "scripts/data/run_tier_pipeline.py retarget --episodes 0"
     ),
 )
 

@@ -332,7 +332,7 @@ def load_tier(
     if not meta.is_file():
         raise RegistryError(
             f"tier metadata missing: {meta}\n"
-            "Fetch it with scripts/download_challenge_episodes.py."
+            "Fetch it with scripts/data/download_challenge_episodes.py."
         )
     if not info_path.is_file():
         raise RegistryError(f"tier info missing: {info_path}")

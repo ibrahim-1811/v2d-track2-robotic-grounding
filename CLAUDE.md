@@ -37,7 +37,7 @@ and Isaac Sim exist.
 - **Never inline non-trivial Python in `bash -lc "python -c ..."`.** Quoting passes
   through heredoc → bash → bash -lc → python and mangles. Write a script,
   bind-mount it read-only, run it by path — see
-  `scripts/validate_soma_in_container.py`.
+  `scripts/data/validate_soma_in_container.py`.
 - `HOME=/tmp` is tmpfs inside the image, so its HF cache is ephemeral. Bind-mount a
   host directory for anything that must survive.
 
@@ -119,7 +119,7 @@ then fails inside `SOMALayer`.
 and zero in the 1057-file LFS manifest. `evaluate_policy.py` rebuilds the whole
 experiment from config embedded in a safetensors header, so nothing can stand in
 for one. Any baseline MPPE number requires training first. See
-`docs/FLASHCHORD_BASELINE_SMOKE.md`.
+`docs/findings/FLASHCHORD_BASELINE_SMOKE.md`.
 
 Replay is **object-assisted** (`voc_scale: 1.0` — external PD wrench *plus
 gravity compensation* on the object every substep). Evaluation forces
@@ -162,7 +162,7 @@ policy success.
   runs `prepare_identity` over T identical identities (its own docstring says to
   call it once per identity). Fails in `align_vectors_warp`:
   `Failed to allocate 283254240 bytes`.
-- **Fix: `scripts/retarget_episode_g1.py`** — chunks `SOMA._reconstruct` over
+- **Fix: `scripts/data/retarget_episode_g1.py`** — chunks `SOMA._reconstruct` over
   frame blocks and delegates to `soma_to_g1.main()` unmodified. Numerically
   equivalent (no cross-frame coupling; frame-0 transform built from the full
   arrays before chunking). 778 frames at `--chunk-frames 64`: **79 s, 3,411 MiB
@@ -190,7 +190,7 @@ policy success.
 - **Full mirror is local**: both available tiers, 30 episodes each
   (`tier_1_multiview_caption`, `tier_2_synthetic_noise`; 30 parquets + 30 ground
   planes + 30 support USDAs + 29 meshes per tier, ~390 MB each). Re-fetch or
-  extend with `scripts/download_challenge_episodes.py` (stdlib urllib; there is
+  extend with `scripts/data/download_challenge_episodes.py` (stdlib urllib; there is
   no `huggingface_hub` or HF CLI anywhere on this box). Videos are skipped by
   default — they are only needed to build a Tier 3 reconstruction.
 - **Tier 3 does not exist as a download.** Only tiers 1 and 2 are on Hugging
@@ -230,7 +230,7 @@ policy success.
   i.e. better), the iteration/residual relation is a smooth continuum
   (199 iters → 1.08, 200 → 1.13), and NVIDIA's demo is not comparable because
   its median 8 / max 34 iterations came from the plateau exit. See
-  `docs/TIER_REFERENCES.md` §6.4.
+  `docs/findings/TIER_REFERENCES.md` §6.4.
 - **A solve that genuinely gives up says so on stdout**:
   `[whole_body_kinematics] giving up on frame after N Pink/eigenpy rebuilds`.
   Grep the retarget logs for it; zero Tier 1 episodes have it. That, not the
@@ -251,7 +251,7 @@ policy success.
 - **`Checker.summary()` prints `ALL CHECKS PASSED` per episode.** In a 30-episode
   batch that banner appears once per passing episode, so the log can end with it
   immediately above `=== validate: 13/30 ===`. Pass `summary=False` from batch
-  callers; the single-file `scripts/validate_g1_reference.py` keeps it because
+  callers; the single-file `scripts/data/validate_g1_reference.py` keeps it because
   `verify_step_B.sh` runs that path.
 - **`load_tier()` does not probe object visibility** — `visible_object_frames`
   is `-1` and `dropped_frames` is empty until `annotate_object_validity` runs.
@@ -270,7 +270,7 @@ policy success.
   43, critic_context 10, objective terms 12 -> **2,246 B/transition** at
   float16. The shipped `capacity: 10000000` is therefore **20.92 GiB — 2.6x the
   whole card**. Workable ceiling is **1,000,000** (2.09 GiB). Use
-  `scripts/probe_flash_sac_memory.py` to recompute for any episode.
+  `scripts/train/probe_flash_sac_memory.py` to recompute for any episode.
 - **Measured world-count ceiling (replay 500k): 1024 worlds, 6,826 MiB.** 2048
   OOMs in `wp_cuda_graph_create_exec` — the same CUDA-graph failure as PPO, so
   host RAM cannot buy it back. 256 -> 1024 worlds costs only 2,580 MiB, which is
@@ -307,7 +307,7 @@ policy success.
   `/workspace`; ours are absolute `/work/adapter_out/...`. Zero-shot
   cross-episode eval needs the baked `task.parquet` rewritten in the
   checkpoint's `user.resolved_config_json` metadata (header-only edit — read it
-  with `scripts/read_checkpoint_metadata.py`, which is stdlib and runs on the
+  with `scripts/diagnose/read_checkpoint_metadata.py`, which is stdlib and runs on the
   host).
 - Checkpoints come in three files per boundary: `policy_<step>` (4.6 MiB, actor
   only), `state_<step>` (152 MiB, full learner), `replay_<step>` (only when
@@ -319,7 +319,7 @@ policy success.
 
 ## FlashSAC weight-only transfer (Step D, Stage 2)
 
-- **`scripts/transfer_flash_sac_policy.py` is the only honest way to warm-start
+- **`scripts/train/transfer_flash_sac_policy.py` is the only honest way to warm-start
   one episode from another.** It builds the TARGET's fresh learner, splices in
   only the source actor's `params`/`batch_stats`, proves by leaf-by-leaf array
   comparison that nothing else moved (31 leaves changed, 157 identical), and
@@ -365,7 +365,7 @@ policy success.
   kit's `metric_code/track_2/AUC.py`). At that tolerance on a half-metre object,
   **a few degrees of rotation leaves the band**, so AUC is dominated by
   orientation. MPPE is six keypoints at +/-5 cm per axis - far more forgiving.
-- **Doing nothing is not zero.** `scripts/leaderboard_floor.py` scores a frozen
+- **Doing nothing is not zero.** `scripts/evaluate/leaderboard_floor.py` scores a frozen
   object with the official formulas: **tier mean AUC 0.2661, MPPE 49.12 cm**.
   It agrees with NVIDIA's evaluator to 0.3% (AUC) / 0.4% (MPPE). Episodes whose
   object barely moves score very high by doing nothing (ep 8 `skinny_wood_chair`
@@ -385,11 +385,11 @@ policy success.
 ## Verify the current state
 
 ```bash
-bash scripts/verify_step_8_4.sh              # exit 0 = everything through Step 8.4 is good
-bash scripts/verify_flashchord_smoke.sh      # exit 0 = FlashCHORD G1 example replays cleanly
-bash scripts/verify_flashchord_training.sh   # exit 0 = PPO train + checkpoint + evaluate works
-bash scripts/verify_step_B.sh                # exit 0 = Episode 0 G1 reference is valid (--fast to skip the retarget)
-bash scripts/verify_step_C.sh                # exit 0 = all 30 Tier 1 references valid (--tier/--rerun)
+bash scripts/verify/verify_step_8_4.sh              # exit 0 = everything through Step 8.4 is good
+bash scripts/verify/verify_flashchord_smoke.sh      # exit 0 = FlashCHORD G1 example replays cleanly
+bash scripts/verify/verify_flashchord_training.sh   # exit 0 = PPO train + checkpoint + evaluate works
+bash scripts/verify/verify_step_B.sh                # exit 0 = Episode 0 G1 reference is valid (--fast to skip the retarget)
+bash scripts/verify/verify_step_C.sh                # exit 0 = all 30 Tier 1 references valid (--tier/--rerun)
 ```
 
 ## Orientation-aware FlashSAC (thirteenth reward term)
@@ -410,7 +410,7 @@ bash scripts/verify_step_C.sh                # exit 0 = all 30 Tier 1 references
   TWICE** in the resolved config. Project both or the official evaluator still
   tries to import our module and dies with `full_key: env.objective`.
 - **Curriculum and objective configs are generated**, not hand-written:
-  `scripts/make_orientation_curriculum.py` reads upstream's YAML and refuses to
+  `scripts/train/make_orientation_curriculum.py` reads upstream's YAML and refuses to
   run if the twelve weights, nine thresholds or stage settings moved. Re-running
   it must be a no-op; `verify_orientation_flash_sac.sh` checks that.
 - **At 1024 worlds the 350M budget is exact**: 349,999,104 / 1024 = 341,796
@@ -420,7 +420,7 @@ bash scripts/verify_step_C.sh                # exit 0 = all 30 Tier 1 references
 - Measured, 1024 worlds / 500k replay: **~16,500 env steps/s, ~7,170 MiB peak**,
   so a 350M run is **~6 h**. The extra column costs exactly 4 B/transition
   (1.91 MiB in a 500k ring). Startup (Warp + JAX compile) is ~39 s.
-- `scripts/monitor_training_disk.py` prunes only one named run's
+- `scripts/train/monitor_training_disk.py` prunes only one named run's
   `state_*.safetensors`, never actors, and hard-refuses the protected dirs
   (`source_ep0_w1024`, `submission_trial_20261021`, …). Dry run unless
   `--apply`.
@@ -434,7 +434,7 @@ bash scripts/verify_step_C.sh                # exit 0 = all 30 Tier 1 references
   the metric only ever sees the part of the episode before failure. Never quote
   a training tracking error as a result; export the trajectory.
 - **Scores, 5 fresh unassisted world-1 repeats each**
-  (`scripts/evaluate_orientation_sweep.sh`):
+  (`scripts/evaluate/evaluate_orientation_sweep.sh`):
   | checkpoint | AUC | MPPE cm |
   |---|---|---|
   | previous 10M | 0.1190 +/- 0.0062 | 93.89 |

@@ -12,7 +12,7 @@ It is a FORMAT translator, not a FRAME translator. See the coordinate contract
 below - getting this wrong is the single easiest way to silently corrupt the
 whole pipeline.
 
-THE COORDINATE CONTRACT  (verified in docs/EPISODE_0_FRAME_AUDIT.md)
+THE COORDINATE CONTRACT  (verified in docs/findings/EPISODE_0_FRAME_AUDIT.md)
 --------------------------------------------------------------------
 * ``observation.human.*``  is ALREADY in the SOMA source frame. Copy verbatim.
 * ``observation.object.pose`` is in the source OpenCV world frame (X right,
@@ -154,7 +154,7 @@ def quaternion_wxyz_to_matrix(quat_wxyz: np.ndarray) -> np.ndarray:
     """(T, 4) w-first unit quaternions -> (T, 3, 3) rotation matrices.
 
     WHY W-FIRST MATTERS: the dataset stores ``[qw, qx, qy, qz]`` (verified three
-    ways in docs/EPISODE_0_WALKTHROUGH.md section 5). SciPy, ROS and most
+    ways in docs/guides/EPISODE_0_WALKTHROUGH.md section 5). SciPy, ROS and most
     libraries use w-LAST. Mixing them up still produces a perfectly valid unit
     quaternion - just the WRONG rotation - so nothing downstream would complain.
 
@@ -342,7 +342,7 @@ def build_soma_params(ep: Episode) -> dict[str, np.ndarray]:
         "unit": np.array("meters"),
         # keep_root=False means "poses[:, 0] is the root rotation", which is
         # true here: joint 0 is Hips and the root TRANSLATION is a separate
-        # column. See docs/CHALLENGE_ADAPTER.md for why the value is also inert.
+        # column. See docs/findings/CHALLENGE_ADAPTER.md for why the value is also inert.
         "keep_root": np.array(False),
         # Challenge poses are LOCAL (per meta/info.json's
         # human_pose_convention). absolute_pose=True is explicitly unsupported

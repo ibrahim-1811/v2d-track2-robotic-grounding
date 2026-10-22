@@ -7,10 +7,48 @@ Track 1 (our WHAM + FoundationPose 4D reconstruction baseline) lives in a separa
 repository: [`Swithinraj/v2d-track1-wham-foundationpose`](https://github.com/Swithinraj/v2d-track1-wham-foundationpose).
 This repository is independent of it — no shared history, no shared working tree.
 
-- **Status:** Step 1 complete — machine audit and documentation only. No installation yet.
 - **Leaderboard freeze:** 4 November 2026, 5:00 p.m. EST
 
+**Status (2026-10-22).** All 30 Tier 1 references are built and validated. One
+episode has a fully trained policy: Episode 0 at 350M steps, scoring
+**AUC 0.3491** against a **0.3769** "do nothing" floor — real progress over our
+earlier 0.1190, but still short of inaction. Our submitted tier entry is
+0.17521; NVIDIA's own CHORD baseline is 0.51038.
+
+The open question is that we have never run NVIDIA's actual recipe: 8 GB of
+laptop VRAM forced the replay buffer down **20x**. Testing that on a bigger GPU
+is the next step — see [docs/plans/TOP3_STRATEGY.md](docs/plans/TOP3_STRATEGY.md).
+
 ---
+
+## Documentation
+
+| Start here | |
+|---|---|
+| [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | what this project is and how it works, with diagrams |
+| [CLAUDE.md](CLAUDE.md) | environment traps — read before running anything |
+| [docs/guides/ONBOARDING.md](docs/guides/ONBOARDING.md) | set up from scratch, and what to work on |
+| [docs/architecture/CODE_MAP.md](docs/architecture/CODE_MAP.md) | what every file does |
+| [docs/README.md](docs/README.md) | the full documentation index |
+
+## Repository layout
+
+```
+pipeline/   our Python package (the logic) and its tests
+scripts/    things you run: data/ train/ evaluate/ diagnose/ verify/
+configs/    generated Hydra overrides for our reward variants
+docs/       architecture/ guides/ reference/ findings/ plans/
+official/   NVIDIA's code, pinned and READ-ONLY   (gitignored)
+data/       challenge inputs and staged references (gitignored)
+outputs/    runs, checkpoints, reports             (gitignored)
+```
+
+## Health check
+
+```bash
+.venvs/episode0/bin/python -m pytest pipeline/tests/ -q   # 142 tests, ~1 s
+bash scripts/verify/verify_orientation_flash_sac.sh       # full check
+```
 
 ## 1. What Track 2 asks for
 
@@ -160,8 +198,8 @@ Step 1 is an audit. **Nothing has been installed, downloaded, built or launched.
 
 | Area | Status |
 |---|---|
-| Machine audited | Done — [docs/SETUP_AUDIT.md](docs/SETUP_AUDIT.md) |
-| Requirements compared against official docs | Done — [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) |
+| Machine audited | Done — [docs/reference/SETUP_AUDIT.md](docs/reference/SETUP_AUDIT.md) |
+| Requirements compared against official docs | Done — [docs/reference/REQUIREMENTS.md](docs/reference/REQUIREMENTS.md) |
 | Docker installed | **No — blocker** |
 | NVIDIA Container Toolkit | Yes, 1.20.1, verified against the GPU |
 | NVIDIA driver / CUDA | Yes, 580.178.04 / 13.0 — exceeds the recommended 580.126.09 |

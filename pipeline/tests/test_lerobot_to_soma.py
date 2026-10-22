@@ -83,7 +83,7 @@ def test_joint_count_and_anchors(ep: Episode):
 
 
 def test_known_joint_indices(ep: Episode):
-    # Verified against meta/info.json in docs/EPISODE_0_WALKTHROUGH.md section 3.1
+    # Verified against meta/info.json in docs/guides/EPISODE_0_WALKTHROUGH.md section 3.1
     expected = {"Hips": 0, "LeftArm": 12, "LeftHand": 14, "RightArm": 40,
                 "RightHand": 42, "LeftLeg": 67, "LeftFoot": 69,
                 "RightLeg": 72, "RightFoot": 74}

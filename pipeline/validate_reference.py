@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate a retargeted G1 ``motion_v1`` parquet (Step B output).
 
-Originally the body of ``scripts/validate_g1_reference.py``, moved here so the
+Originally the body of ``scripts/data/validate_g1_reference.py``, moved here so the
 30-episode orchestrator can call the same checks in-process and collect their
 results instead of scraping stdout. The script is now a thin CLI over
 ``run_checks``; its command line and printed output are unchanged.

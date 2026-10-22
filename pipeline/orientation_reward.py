@@ -6,7 +6,7 @@ implements the same function as a Warp kernel and is tested against this one
 inside the container.
 
 Conventions, in full, because getting any of them wrong rewards the wrong
-rotation (see ``docs/superpowers/plans/2026-10-21-orientation-aware-flashsac.md``):
+rotation (see ``docs/plans/2026-10-21-orientation-aware-flashsac.md``):
 
 * Quaternions here are **xyzw**, the Newton/Warp layout. The retargeted parquet
   and :class:`flash_chord.data.reference.Reference` are wxyz, but
