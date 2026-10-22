@@ -217,6 +217,171 @@ policy success.
   system numpy 1.26, so use the **fully isolated** `.venvs/kit` (no
   `--system-site-packages`), not `.venvs/episode0`.
 
+## Tier-wide G1 references (Step C)
+
+- **`ik_num_iterations` hitting 200 is NOT a failure for G1, and must never be
+  gated.** `configs/g1/retargeter.json` sets `posture_task.q_prev_cost = 0.05`,
+  so `has_extra_tasks` is True on every frame, which makes the plateau exit at
+  `whole_body_kinematics.py:564` unreachable and leaves `vel_norm < 1e-6`
+  (line 566) as the solve's only early exit. The cap therefore means "the QP did
+  not reach a 1e-6 velocity norm" — asymptotic, not divergent. Gating it failed
+  **17 of 30** Tier 1 episodes on that one check alone. Measured: residual on
+  capped frames is 1.07x the same episode's uncapped median (Episode 11: 0.91x,
+  i.e. better), the iteration/residual relation is a smooth continuum
+  (199 iters → 1.08, 200 → 1.13), and NVIDIA's demo is not comparable because
+  its median 8 / max 34 iterations came from the plateau exit. See
+  `docs/TIER_REFERENCES.md` §6.4.
+- **A solve that genuinely gives up says so on stdout**:
+  `[whole_body_kinematics] giving up on frame after N Pink/eigenpy rebuilds`.
+  Grep the retarget logs for it; zero Tier 1 episodes have it. That, not the
+  iteration count, is the real early-exit detector.
+- **Gate the reference, not the solver's effort.** What is gated:
+  residual median vs NVIDIA's demo (< 3x; worst episode 1.81x), a per-episode
+  residual **spike** test (worst frame vs that episode's own median, < 3x; worst
+  1.63x, NVIDIA's own demo 1.65x), and **per-joint velocity against
+  `assets/urdfs/g1/main_with_hand.urdf`** (worst 0.57x of the limit, so every
+  reference is trackable).
+- **G1's 14 hand joints are undriven** by `soma_to_g1` — constant across the
+  sequence here *and* in NVIDIA's demo. Exclude them from any joint-space
+  measurement or you will report the rig's rest pose (they sit on a position
+  limit for 100% of frames).
+- `waist_pitch_joint` resting on its position limit (median 33.7% of frames) is
+  the known G1-vs-human torso offset, the same one `torso_link` shows in the IK
+  residuals. NVIDIA's demo does it too (11.4%). Report it; do not gate it.
+- **`Checker.summary()` prints `ALL CHECKS PASSED` per episode.** In a 30-episode
+  batch that banner appears once per passing episode, so the log can end with it
+  immediately above `=== validate: 13/30 ===`. Pass `summary=False` from batch
+  callers; the single-file `scripts/validate_g1_reference.py` keeps it because
+  `verify_step_B.sh` runs that path.
+- **`load_tier()` does not probe object visibility** — `visible_object_frames`
+  is `-1` and `dropped_frames` is empty until `annotate_object_validity` runs.
+  Use `tier_specs()` (which probes via pyarrow), or Episode 11 will look like
+  901 frames instead of 900.
+- Episode 11 is the only episode with a dropped frame: index 900 of 901 has
+  `observation.object.visible == False`, so the retarget window stops at 900.
+  It is recorded in the manifest, the `validate` record's metrics and notes, and
+  the report.
+
+## FlashSAC on 8 GB (Step D)
+
+- **The replay ring is the binding constraint, not the world count.**
+  `replay.create_replay` allocates it with `jnp.zeros`, so it lives in VRAM.
+  Measured for `g1_recon_body_flash_sac` on our G1 references: obs 486, action
+  43, critic_context 10, objective terms 12 -> **2,246 B/transition** at
+  float16. The shipped `capacity: 10000000` is therefore **20.92 GiB — 2.6x the
+  whole card**. Workable ceiling is **1,000,000** (2.09 GiB). Use
+  `scripts/probe_flash_sac_memory.py` to recompute for any episode.
+- **Measured world-count ceiling (replay 500k): 1024 worlds, 6,826 MiB.** 2048
+  OOMs in `wp_cuda_graph_create_exec` — the same CUDA-graph failure as PPO, so
+  host RAM cannot buy it back. 256 -> 1024 worlds costs only 2,580 MiB, which is
+  why the replay, not the worlds, is what does not fit.
+- **The progress bar's `env steps/s` is a cumulative average** (total/elapsed,
+  including startup), so it climbs monotonically and never plateaus. Difference
+  the log for the real rate: **~3,000 env steps/s at 256 worlds**, vs PPO's best
+  of 899 at 1024. Full recipe = 350M steps = **32 h/episode** at that rate.
+- **Bind-mount the Warp kernel cache.** `/root/.cache/warp` is inside the image,
+  so every `docker run` recompiles (~130 s; one module alone took 25.8 s). Mount
+  a host dir there and modules load `(cached)` in ~200 ms. The CPU saturation
+  during that phase is nvcc, not training — the GPU is idle until
+  `compiled FlashSAC JAX executables` appears.
+- **`updates_per_collection` is a replay ratio, not a constant.**
+  `total_optimizer_updates = (total_environment_steps // world_count) *
+  updates_per_collection`. Keeping 4.0 while cutting 2048 -> 256 worlds gives
+  **8x** the gradient updates per env step. At 1024 worlds, `2.0` matches
+  NVIDIA's reference ratio.
+- **`resume` is not transfer, and the guard does not guard.**
+  `restore_learner_checkpoint` carries `environment_steps` (hence the curriculum
+  stage and the consumed budget), Adam state, the reward normalizer's moments
+  and exploration state. Only the replay is safe — it loads solely via an
+  explicit `checkpoint.load_replay_path`. `validate_resume_reference_config`
+  compares **only** the object-articulation contract, which is `[]` for every
+  rigid-object episode, so it will happily resume Episode 0's state onto
+  Episode 21. The baked `task.parquet` is recorded but never compared.
+- **There is no weight-only warm start upstream.** `training.checkpoint_path`
+  goes through `_validate_metadata(path, "training_state")` and rejects the
+  4.6 MiB `policy_*.safetensors` actor file outright. A clean transfer needs
+  checkpoint surgery in our own `scripts/` (fresh learner template + ep0 actor
+  weights + everything else reset).
+- **`evaluation.source_root` cannot repoint a checkpoint at another episode.**
+  `_resolve_parquet` only rebases paths that are relative or under
+  `/workspace`; ours are absolute `/work/adapter_out/...`. Zero-shot
+  cross-episode eval needs the baked `task.parquet` rewritten in the
+  checkpoint's `user.resolved_config_json` metadata (header-only edit — read it
+  with `scripts/read_checkpoint_metadata.py`, which is stdlib and runs on the
+  host).
+- Checkpoints come in three files per boundary: `policy_<step>` (4.6 MiB, actor
+  only), `state_<step>` (152 MiB, full learner), `replay_<step>` (only when
+  `save_replay=true`, default false). A short run always saves a terminal
+  checkpoint, as with PPO.
+- Episodes **0 and 21 are the only two episodes in Tier 1 sharing an object**
+  (both `tall_bar_stool`), so ep0->ep21 is same-object/different-task — the most
+  favourable transfer case available, and not evidence about the other 28.
+
+## FlashSAC weight-only transfer (Step D, Stage 2)
+
+- **`scripts/transfer_flash_sac_policy.py` is the only honest way to warm-start
+  one episode from another.** It builds the TARGET's fresh learner, splices in
+  only the source actor's `params`/`batch_stats`, proves by leaf-by-leaf array
+  comparison that nothing else moved (31 leaves changed, 157 identical), and
+  writes a valid `training_state`. Upstream is imported, never modified.
+- **A hand-built checkpoint needs `curriculum_stage` in its metadata.**
+  `save_learner_checkpoint` adds it at save time; without it
+  `evaluate_checkpoint` raises `FlashSAC checkpoint is missing its curriculum
+  stage`. Derive it from the target's own curriculum (`stage_index(0)`), and
+  carry `voc_scale` and the two reset probabilities too.
+- **Proof a transfer is not a resume:** the first progress line reads
+  `0/65,536`, not `65,536/65,536`.
+- **Matching tensor dims is not enough.** The tool compares the resolved config
+  of `action, observation, embodiment, objective, sim, termination, reset, env`
+  and refuses on any difference; only `task` may differ.
+- **MPPE ~55 cm on Episode 21 is the "never touched the object" floor**, not a
+  score. The reference object travels 0.547 m from frame 0; a policy that moves
+  it 1.5 cm scores 54.97 cm, and freezing it at frame 0 scores 54.74 cm. Always
+  check achieved object travel from the exported trajectory before reading
+  anything into an MPPE near that floor.
+- **Actor-only transfer into a FRESH critic destabilizes early fine-tuning.**
+  Measured: scratch and zero-shot both move the object 0.0146 m (inert), while
+  65k steps of fine-tuning from a transferred actor moves it **1.14 m** - 2.1x
+  the reference's own 0.55 m - and MPPE degrades 55.98 -> 109.46 cm. Transfer
+  actor+critic, or freeze/warm the critic, before trusting a fine-tune.
+- **Submission numbers must come from `evaluation.world_count=1`.** The kit's
+  `track_2_tier1` sets `worlds_per_episode: 1` and `pack_submission.py` scores
+  **world 0 only**, so a 64-world evaluation disagrees with the packer (55.977
+  vs 55.008 cm) and the kit warns about it. Fine for A/B at matched world count;
+  never for a submitted number.
+- **The packer accepts our FlashSAC trajectory exports as-is**
+  (`flash_chord_object_trajectories_v1`), and its frame check independently
+  validates the Step A->C pipeline: *"one rigid frame transform per episode;
+  maximum residual 1.23e-07 m, 1.26e-07 rad"*. `--dataset-root data/v2d_challenge`
+  resolves because `participant_reference_root` falls back to
+  `track_2/tier_1_multiview_caption`.
+- `.venvs/kit` lacks `trimesh`, so the packer skips its AUC cross-check
+  (MPPE/SP-SR/MP-SR still cross-check).
+
+## The leaderboard metric is AUC, and it is not MPPE (Step D)
+
+- **Track 2 ranks by AUC**, the area under "fraction of frames with ADD < t" for
+  **t in 1..9 cm** (`_ADD_THRESHOLDS_M = np.arange(0.01, 0.10, 0.01)` in the
+  kit's `metric_code/track_2/AUC.py`). At that tolerance on a half-metre object,
+  **a few degrees of rotation leaves the band**, so AUC is dominated by
+  orientation. MPPE is six keypoints at +/-5 cm per axis - far more forgiving.
+- **Doing nothing is not zero.** `scripts/leaderboard_floor.py` scores a frozen
+  object with the official formulas: **tier mean AUC 0.2661, MPPE 49.12 cm**.
+  It agrees with NVIDIA's evaluator to 0.3% (AUC) / 0.4% (MPPE). Episodes whose
+  object barely moves score very high by doing nothing (ep 8 `skinny_wood_chair`
+  **0.5978**, above the CHORD baseline's tier average); ep 4 `baseball_bat`
+  scores 0.1293.
+- **Always quote a policy's AUC against that episode's stationary floor.**
+  Episode 0 trained to 10M has MPPE 22.59 (31% better than the 32.59 floor) but
+  AUC 0.2125 against a 0.3769 floor - **44% worse than not touching the
+  object**. The stage-0 reward has `object_position: 1.0` and **no object
+  orientation term**, so the optimisation target and the ranking metric
+  disagree.
+- Leaderboard reference points (Tier 1, 2026-10-20): CHORD Baseline AUC 0.5104 /
+  MPPE 17.74; best complete entry AUC 0.6003 / MPPE 12.66; best MPPE 7.44
+  (AUC 0.5953). Rank 1 shows AUC 0.9691 with no SP-SR/MP-SR/MPPE entry and is
+  not comparable.
+
 ## Verify the current state
 
 ```bash
@@ -224,4 +389,82 @@ bash scripts/verify_step_8_4.sh              # exit 0 = everything through Step 
 bash scripts/verify_flashchord_smoke.sh      # exit 0 = FlashCHORD G1 example replays cleanly
 bash scripts/verify_flashchord_training.sh   # exit 0 = PPO train + checkpoint + evaluate works
 bash scripts/verify_step_B.sh                # exit 0 = Episode 0 G1 reference is valid (--fast to skip the retarget)
+bash scripts/verify_step_C.sh                # exit 0 = all 30 Tier 1 references valid (--tier/--rerun)
 ```
+
+## Orientation-aware FlashSAC (thirteenth reward term)
+
+- **FlashSAC is generic in `len(env.objective_term_names)`** — replay,
+  n-step discounting, `_relabel_rewards`, the learner and the runner all size
+  themselves from it. A thirteenth objective term therefore needs **no upstream
+  edit**: `pipeline/flash_sac_orientation.py` delegates to `ReconBodyObjective`,
+  copies its twelve terms verbatim and appends `object_orientation`.
+- **A scalar reward patch would not be learned.** FlashSAC stores *raw* terms
+  and recomposes the reward from curriculum weights at sample time, so the term
+  must be a real column. `pipeline/tests/test_flash_sac_orientation_replay.py`
+  drives NVIDIA's own `insert_replay`/`relabel_rewards` to prove it.
+- **`object_orientation_threshold: 1.5` in `termination` is NOT our reward** —
+  it is upstream's 85.94° failure limit. The exporter preserves it; only
+  `objective` and the curriculum weights are projected.
+- **Hydra resolves `env.objective: ${objective}`, so the objective appears
+  TWICE** in the resolved config. Project both or the official evaluator still
+  tries to import our module and dies with `full_key: env.objective`.
+- **Curriculum and objective configs are generated**, not hand-written:
+  `scripts/make_orientation_curriculum.py` reads upstream's YAML and refuses to
+  run if the twelve weights, nine thresholds or stage settings moved. Re-running
+  it must be a no-op; `verify_orientation_flash_sac.sh` checks that.
+- **At 1024 worlds the 350M budget is exact**: 349,999,104 / 1024 = 341,796
+  collections, × 2.0 updates = **683,592 optimizer updates**, which is the
+  full-recipe LR horizon, so no LR override is needed and every curriculum
+  threshold lands on a collection boundary.
+- Measured, 1024 worlds / 500k replay: **~16,500 env steps/s, ~7,170 MiB peak**,
+  so a 350M run is **~6 h**. The extra column costs exactly 4 B/transition
+  (1.91 MiB in a 500k ring). Startup (Warp + JAX compile) is ~39 s.
+- `scripts/monitor_training_disk.py` prunes only one named run's
+  `state_*.safetensors`, never actors, and hard-refuses the protected dirs
+  (`source_ep0_w1024`, `submission_trial_20261021`, …). Dry run unless
+  `--apply`.
+
+## Episode 0 at 350M: what the first orientation arm actually showed
+
+- **Training tracking errors massively overstate evaluation quality.** The run's
+  own metrics ended at `obj_rot` 7.85 deg / `obj_pos` 3.4 cm, but the unassisted
+  778-frame evaluation rollout measures **53.7 deg / 25.2 cm**. Training
+  episodes terminate on the 10 cm / 1.5 rad thresholds and average 275 steps, so
+  the metric only ever sees the part of the episode before failure. Never quote
+  a training tracking error as a result; export the trajectory.
+- **Scores, 5 fresh unassisted world-1 repeats each**
+  (`scripts/evaluate_orientation_sweep.sh`):
+  | checkpoint | AUC | MPPE cm |
+  |---|---|---|
+  | previous 10M | 0.1190 +/- 0.0062 | 93.89 |
+  | 230M | 0.1579 +/- 0.0360 | 36.13 |
+  | **350M** | **0.3491 +/- 0.0185** | **26.84 +/- 12.47** |
+  | stationary floor | 0.3769 | 32.59 |
+  So +193% AUC over the old policy and MPPE finally beats the floor, but AUC is
+  still **7.4% BELOW doing nothing**, and all three success rates are 0.
+- **Stages 7-8 were worth the wall clock**: AUC 0.1579 -> 0.3491 over the last
+  34% of the budget. Do not judge a run before its reset-distribution stages.
+- **The failure is one specific event, not a gradual drift.** Per-phase error of
+  the 350M rollout: frames 0-100 **0.5 cm / 1.1 deg**, 100-300 2.5 cm / 5.1 deg,
+  300-500 28.7 cm / 50.4 deg, 500-778 47.9 cm / 110 deg. Position passes 10 cm
+  at **frame 360**, rotation passes 20 deg at **frame 323**.
+- **Why there**: the reference stool is *stationary* for the first ~4.7 s
+  (frames 0-234, tilt 0.5 deg, travel 3 mm) and only then tips up - z 0.266 ->
+  0.59 m, tilt 0 -> 91.6 deg, travel 0.78 m. Our policy tracks the do-nothing
+  prefix almost perfectly and loses the object the moment real manipulation
+  starts. It has not learned the tip-up; it has learned to stand still.
+  Achieved travel is **0.88 m, 271% of the reference's 0.325 m** - it throws the
+  stool rather than tipping it.
+- **That also explains the competitive stationary floor**: ~40% of the episode's
+  correct answer is "do not move", which a frozen object gets for free.
+- **Both shaping terms are dead in the failure regime.** `object_position` is
+  `exp(-sse/0.2^2)`, which is 0.018 at 40 cm and 0.000 at 80 cm; an exp-shaped
+  orientation term at std 0.2 is ~6e-7 at 43 deg. Past the failure point there
+  is no gradient at all, and training terminates there anyway, so recovery is
+  never learned. Pick std against the error the *evaluation* shows, not the
+  error training reports.
+- **The thirteenth term was not the bottleneck.** It contributed 1.51% of
+  `object_position`'s magnitude (11th of 13, below `action_rate_l2`). Dominant
+  termination cause is **palm 56.9%**, not object - the hands leave the
+  reference pose exactly when force is required.
