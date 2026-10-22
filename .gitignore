@@ -7,15 +7,15 @@ kaggle.json
 
 # Local environments and caches
 .venv/
-.venvs/
-.cache/
-containers/
+/.venvs/
+/.cache/
+/containers/
 
 # Large or generated artifacts
-data/
+/data/
 weights/
 inputs/
-outputs/
+/outputs/
 submissions/
 logs/
 
@@ -25,7 +25,7 @@ body_models/
 *.pkl
 
 # Official third-party checkouts and extracted release artifacts
-official/
+/official/
 third_party/
 
 # Isaac Lab / Omniverse run output
