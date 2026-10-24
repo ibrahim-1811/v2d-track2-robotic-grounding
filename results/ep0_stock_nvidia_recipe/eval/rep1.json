@@ -1,0 +1,71 @@
+{
+  "checkpoint": "/out/ep0_stock_nvidia_recipe/policy_349999104.safetensors",
+  "checkpoint_sha256": "c3319951a74e7d3abede543eca0acb8f2bfa29ff906a8985eb3f2b77922c3f88",
+  "environment_steps": 349999104,
+  "metrics": {
+    "add_auc": 0.4017512853470437,
+    "add_auc_per_body": [
+      0.4017512853470437
+    ],
+    "add_std_m": 0.326244982677432,
+    "add_std_per_body_m": [
+      0.326244982677432
+    ],
+    "chord_sr": 0.0,
+    "gated_causes": [
+      "wrist",
+      "object"
+    ],
+    "maniptrans_sr": 0.0,
+    "mean_add_m": 0.19627161243911295,
+    "mean_per_point_error_cm": 17.8236244373153,
+    "mppe_cm": 17.823624437315296,
+    "object_body_names": [
+      "object"
+    ],
+    "object_orientation_error_deg": 29.40272205493133,
+    "object_orientation_error_per_body_rad": [
+      0.5131743089073048
+    ],
+    "object_orientation_error_rad": 0.5131743089073048,
+    "object_orientation_error_std_deg": 0.0,
+    "object_orientation_error_std_rad": 0.0,
+    "object_position_error_m": 0.17752740086859534,
+    "object_position_error_per_body_m": [
+      0.17752740086859534
+    ],
+    "object_position_error_std_m": 0.0,
+    "position_mean_centered": false,
+    "relative_position_error_cm": 0.0,
+    "spider_position_error_centered_m": 0.24212808211468628,
+    "spider_sr_uncentered": 0.0,
+    "step_count": 778,
+    "termination_cause_fraction": {
+      "object": 1.0,
+      "wrist": 1.0
+    },
+    "world_count": 1
+  },
+  "motion_end_frame": -1,
+  "motion_start_frame": 0,
+  "non_finite_worlds": [],
+  "object_orientation_threshold_rad": 1.5,
+  "object_position_threshold_m": 0.1,
+  "parquet": "/work/adapter_out/whole_body/soma/sequence_id=2026-06-04_14-16-23_tall_bar_stool_tip_up_04/robot_name=g1/data.parquet",
+  "reference_tracking": {
+    "failure_cause_fraction": {
+      "object": 1.0,
+      "palm": 1.0,
+      "pelvis": 1.0
+    },
+    "reference_end_fraction": 1.0,
+    "success_rate": 0.0
+  },
+  "reset_mode": "explicit",
+  "settling_steps": 0,
+  "sim_control_fps": 50.0,
+  "sim_physics_fps": 200.0,
+  "start_frame": 0,
+  "step_count": 778,
+  "world_count": 1
+}

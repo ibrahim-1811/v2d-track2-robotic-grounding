@@ -1,0 +1,17 @@
+job 349160 on wr23: /out/ep0_stock_nvidia_recipe/policy_349999104.safetensors x 5, world_count=1, episode 0
+--- repeat 1/5
+--- repeat 2/5
+--- repeat 3/5
+--- repeat 4/5
+--- repeat 5/5
+rep1: add_auc=0.4018  mppe_cm=17.8236
+rep2: add_auc=0.5131  mppe_cm=3.3624
+rep3: add_auc=0.3897  mppe_cm=8.0612
+rep4: add_auc=0.4943  mppe_cm=3.5864
+rep5: add_auc=0.5123  mppe_cm=2.9754
+add_auc                mean 0.4622 +/- 0.0613  min 0.3897  max 0.5131  (n=5)
+mppe_cm                mean 7.1618 +/- 6.3093  min 2.9754  max 17.8236  (n=5)
+spider_sr_uncentered   mean 0.8000 +/- 0.4472  min 0.0000  max 1.0000  (n=5)
+maniptrans_sr          mean 0.2000 +/- 0.4472  min 0.0000  max 1.0000  (n=5)
+chord_sr               mean 0.6000 +/- 0.5477  min 0.0000  max 1.0000  (n=5)
+AUC 0.4622 vs stationary floor 0.3769  ->  0.38-0.50: helps but insufficient

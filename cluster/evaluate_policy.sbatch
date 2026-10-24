@@ -1,0 +1,92 @@
+#!/bin/bash
+#SBATCH --job-name=v2d-eval
+#SBATCH --partition=gpu4
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=04:00:00
+#SBATCH --output=/work/mnidgu2s/project/v2d-track2-robotic-grounding/logs/eval_%x_%j.out
+
+# Repeated, unassisted, world-1 evaluation of one checkpoint with NVIDIA's unchanged
+# evaluate_policy.py -- the cluster equivalent of scripts/evaluate/evaluate_step_d.sh,
+# run REPEATS times as fresh processes (single rollouts are not repeatable, see
+# docs/guides/ONBOARDING.md §5). world_count=1 because the packer scores world 0 only.
+#
+# Stock 12-term checkpoints go in as-is; 13-term orientation checkpoints must first be
+# projected with pipeline/flash_sac_actor_export.py.
+#
+#   RUN=ep0_stock_nvidia_recipe STEP=349999104 sbatch cluster/evaluate_policy.sbatch
+#   RUN=... STEP=... REPEATS=5 FLOOR=0.3769 sbatch cluster/evaluate_policy.sbatch
+set -uo pipefail
+
+R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
+SIF=$R/containers/flash_chord.sif
+FC=$R/official/video_to_data/robotic_grounding/flash_chord
+ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
+OUT=$R/outputs/cluster
+
+RUN=${RUN:?set RUN=<run tag under outputs/cluster>}
+STEP=${STEP:?set STEP=<checkpoint step>}
+REPEATS=${REPEATS:-5}
+EPISODE=${EPISODE:-0}
+FLOOR=${FLOOR:-0.3769}
+
+CKPT=/out/$RUN/policy_${STEP}.safetensors
+test -f "$OUT/$RUN/policy_${STEP}.safetensors" || { echo "missing $OUT/$RUN/policy_${STEP}.safetensors"; exit 2; }
+EVAL=$RUN/eval_${STEP}
+mkdir -p "$OUT/$EVAL" "$OUT/warp_cache" "$OUT/tmp/$SLURM_JOB_ID"
+echo "job $SLURM_JOB_ID on $(hostname): $CKPT x $REPEATS, world_count=1, episode $EPISODE"
+
+run() {
+  apptainer exec --nv --cleanenv \
+    --no-mount bind-paths,home,cwd \
+    -B "$FC":/workspace \
+    -B "$ASSETS":/v2d/assets:ro \
+    -B "$R/data/adapter_out":/work/adapter_out:ro \
+    -B "$OUT":/out \
+    -B "$OUT/tmp/$SLURM_JOB_ID":/tmp \
+    --env XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    --env WARP_CACHE_PATH=/out/warp_cache \
+    --env OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" \
+    --pwd /workspace \
+    "$SIF" "$@"
+}
+
+FAILS=0
+for i in $(seq 1 "$REPEATS"); do
+  TRAJ=$(printf "/out/%s/rep%d/episode_%06d.parquet" "$EVAL" "$i" "$EPISODE")
+  mkdir -p "$OUT/$EVAL/rep$i"
+  echo "--- repeat $i/$REPEATS"
+  run python scripts/evaluate_policy.py \
+      "evaluation.checkpoint=$CKPT" \
+      "evaluation.world_count=1" \
+      "evaluation.metrics_output=/out/$EVAL/rep$i.json" \
+      "evaluation.object_trajectories_output=$TRAJ" \
+      hydra.run.dir="/out/$EVAL/rep$i/hydra" \
+    > "$OUT/$EVAL/rep$i.log" 2>&1 || { echo "    FAIL (see $OUT/$EVAL/rep$i.log)"; tail -20 "$OUT/$EVAL/rep$i.log"; FAILS=$((FAILS+1)); }
+done
+
+python3 - "$OUT/$EVAL" "$REPEATS" "$FLOOR" <<'PY'
+import json, statistics, sys
+from pathlib import Path
+d, n, floor = Path(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
+rows = []
+for i in range(1, n + 1):
+    p = d / f"rep{i}.json"
+    if p.exists():
+        m = json.loads(p.read_text()).get("metrics", {})
+        rows.append(m)
+        print(f"rep{i}: " + "  ".join(f"{k}={m[k]:.4f}" for k in ("add_auc", "mppe_cm") if k in m))
+for k in ("add_auc", "mppe_cm", "spider_sr_uncentered", "maniptrans_sr", "chord_sr"):
+    v = [r[k] for r in rows if k in r]
+    if v:
+        sd = statistics.stdev(v) if len(v) > 1 else 0.0
+        print(f"{k:22s} mean {statistics.mean(v):.4f} +/- {sd:.4f}  min {min(v):.4f}  max {max(v):.4f}  (n={len(v)})")
+auc = [r["add_auc"] for r in rows if "add_auc" in r]
+if auc:
+    a = statistics.mean(auc)
+    gate = ">= 0.50: config was the problem, scale up" if a >= 0.50 else (
+        "0.38-0.50: helps but insufficient" if a >= 0.38 else "< 0.38: STOP, re-diagnose")
+    print(f"AUC {a:.4f} vs stationary floor {floor:.4f}  ->  {gate}")
+PY
+exit $FAILS
