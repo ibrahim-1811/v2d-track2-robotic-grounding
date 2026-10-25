@@ -105,7 +105,7 @@ if [ "$FAST" -eq 0 ]; then
     docker run --rm --gpus all \
       -v "$FC:/workspace" -v "$ASSETS:/v2d/assets:ro" \
       -v "$PWD/data/adapter_out:/work/adapter_out:ro" \
-      -v "$PWD/scripts/check_reference_in_flashchord.py:/driver/check_reference_in_flashchord.py:ro" \
+      -v "$PWD/scripts/diagnose/check_reference_in_flashchord.py:/driver/check_reference_in_flashchord.py:ro" \
       -e XLA_PYTHON_CLIENT_PREALLOCATE=false \
       -w /workspace flash_chord:latest \
       python /driver/check_reference_in_flashchord.py \

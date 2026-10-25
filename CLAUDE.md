@@ -360,7 +360,9 @@ policy success.
 
 ## The leaderboard metric is AUC, and it is not MPPE (Step D)
 
-- **Track 2 ranks by AUC**, the area under "fraction of frames with ADD < t" for
+- **Track 2 is NOT ranked by AUC alone** — the final rank is the lowest *sum of ranks*
+  over AUC, SP-SR, MP-SR and MPPE, tiers weighted equally (see "Scoring rules" below).
+  AUC is the area under "fraction of frames with ADD < t" for
   **t in 1..9 cm** (`_ADD_THRESHOLDS_M = np.arange(0.01, 0.10, 0.01)` in the
   kit's `metric_code/track_2/AUC.py`). At that tolerance on a half-metre object,
   **a few degrees of rotation leaves the band**, so AUC is dominated by
@@ -390,6 +392,7 @@ bash scripts/verify/verify_flashchord_smoke.sh      # exit 0 = FlashCHORD G1 exa
 bash scripts/verify/verify_flashchord_training.sh   # exit 0 = PPO train + checkpoint + evaluate works
 bash scripts/verify/verify_step_B.sh                # exit 0 = Episode 0 G1 reference is valid (--fast to skip the retarget)
 bash scripts/verify/verify_step_C.sh                # exit 0 = all 30 Tier 1 references valid (--tier/--rerun)
+bash scripts/verify/verify_keypoint_flash_sac.sh    # cluster: exit 0 = arm-3 keypoint objective is sound
 ```
 
 ## Orientation-aware FlashSAC (thirteenth reward term)
@@ -468,3 +471,50 @@ bash scripts/verify/verify_step_C.sh                # exit 0 = all 30 Tier 1 ref
   `object_position`'s magnitude (11th of 13, below `action_rate_l2`). Dominant
   termination cause is **palm 56.9%**, not object - the hands leave the
   reference pose exactly when force is required.
+
+## Scoring rules, the live board, and why stock stalls (2026-10-25)
+
+Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
+
+- **Final rank = lowest sum of per-metric ranks** (AUC + SP-SR + MP-SR + MPPE; FAQ), and
+  the **three tiers count equally** (site). A team missing any metric is **unranked**
+  (upstream #209). Tier 1 alone cannot win Track 2.
+- **Never ship a frozen-object trajectory**, even where it beats the policy: the FAQ
+  requires trajectories *from learned policies*. `TOP3_STRATEGY.md` §3a is withdrawn.
+- **Live standings need no Kaggle login**:
+  `https://raw.githubusercontent.com/MVerghese/v2d-leaderboard-data/main/leaderboard.json`
+  (the site's `data-src`). `official/.../leaderboard.json` at `193382a` is an empty stub.
+- `origin/main` is ahead of our pinned `193382a`, but only in docs/FAQ/leaderboard code —
+  nothing under `flash_chord` or `robotic_grounding`. The FAQ added: Tier 3 may use Tier 1's
+  **first frame** for alignment and nothing else.
+- **`object_position` is saturated**: 0.92-0.97 of its maximum in every stock run and stage,
+  failing episodes included, because training terminates at 10 cm and
+  `exp(-e^2/0.2^2)` is flat inside that window. The policy learns "stay inside 10 cm" and
+  parks at 3-4 cm / 10-50 deg. There is no object-orientation term. NVIDIA's Sharpa
+  objective has `object_keypoints`; G1's does not.
+- **Arm 3 = `pipeline/flash_sac_keypoints.py`**: six axis keypoints at 0.5 x
+  `command.object_radius`, upstream's Laplacian at 0.05 m, weight 5.0. Run it with
+  `ARM=keypoints` (`train_tier_episode.sbatch` / `submit_tier_lanes.sh`) or
+  `CONFIGS=keypoints EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac"`.
+  `submit_tier_lanes.sh EVAL=1` queues each evaluation `afterok` behind its training.
+- **The exporter is a registry of all three thirteen-term targets** and
+  `evaluate_policy.sbatch` projects them automatically (`portable_policy_<step>`).
+- **The 1.67x playback speed is fixed for everyone**: `source_frame_playback: true` plays
+  one 30 fps frame per 50 Hz step, and the packer needs one row per dataset frame.
+- **Episode 7 diverges to NaN** (seed 42 at 5.3M, seed 43 at 81.8M). It is the only episode
+  with a 1 cm support slab. `train_flash_sac.sbatch` now kills a job at the first NaN
+  metrics line; resume from the last `state_*` before it with
+  `training.resume=true training.checkpoint_path=/out/<run>/state_<step>.safetensors`
+  (replay restarts empty; remaining steps must divide by 2048).
+- **Cluster Python**: login/compute `python3` is 3.9 with no pytest/pyarrow — run tests and
+  parquet analysis inside `containers/flash_chord.sif`, which has numpy 2.4 (no
+  `np.trapz`: use `np.trapezoid`), scipy, pytest, pyarrow, but **no pandas**. Warp kernels
+  test fine on Warp's CPU backend from the login node.
+- `scripts/evaluate/decompose_auc_loss.py` splits a run's AUC into position vs rotation loss
+  and first-failure frame; use it to compare arms on identical terms.
+- **`docker run -v <missing host file>:<path>` does not fail — Docker creates an empty
+  directory there**, and Python then dies with `can't find '__main__' module`. The repo
+  restructure (`365b4b3`) moved scripts into `scripts/{data,diagnose,evaluate}/` but left
+  the old paths in `run_tier_pipeline.py` and four `verify_*.sh` mounts; Tier 2's retarget
+  failed 30/30 this way (2026-10-25, fixed). `run_tier_pipeline.py` now refuses to start
+  if a driver is missing. Delete the root-owned empty dirs Docker left behind with `sudo rmdir`.

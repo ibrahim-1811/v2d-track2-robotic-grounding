@@ -36,6 +36,8 @@ UPSTREAM_OBJECTIVE = (
     / "configs/objective/recon_body.yaml"
 )
 OBJECTIVE_OUTPUT = REPO / "configs/orientation/objective/orientation_recon_body.yaml"
+KEYPOINT_OUTPUT = REPO / "configs/keypoints/curriculum/keypoints_recon_body_flash_sac.yaml"
+KEYPOINT_OBJECTIVE_OUTPUT = REPO / "configs/keypoints/objective/keypoints_recon_body.yaml"
 
 # The twelve weights every upstream stage shares, in the objective's term order.
 EXPECTED_WEIGHTS: tuple[tuple[str, str], ...] = (
@@ -112,15 +114,26 @@ def main() -> int:
     parser.add_argument("--weight", type=float, default=None, help="object_orientation weight (arm default)")
     parser.add_argument(
         "--arm",
-        choices=("squared", "exponential"),
+        choices=("squared", "exponential", "keypoints"),
         default="squared",
-        help="squared: arm 1, -(theta/pi)**2, weight 2.0. exponential: arm 2, exp(-theta**2/std**2), weight 1.0",
+        help="squared: arm 1, -(theta/pi)**2, weight 2.0. exponential: arm 2, exp(-theta**2/std**2), "
+        "weight 1.0. keypoints: arm 3, ADD-shaped object_keypoints, weight 5.0 (configs/keypoints/)",
     )
     parser.add_argument("--std", type=float, default=0.2, help="arm 2 only: shaping width in radians")
+    parser.add_argument("--scale", type=float, default=0.05, help="arm 3 only: Laplacian width in metres")
+    parser.add_argument(
+        "--radius-fraction", type=float, default=0.5, help="arm 3 only: keypoint radius / bounding radius"
+    )
     parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
     if args.weight is None:
-        args.weight = 2.0 if args.arm == "squared" else 1.0
+        args.weight = {"squared": 2.0, "exponential": 1.0, "keypoints": 5.0}[args.arm]
+    term = "object_keypoints" if args.arm == "keypoints" else "object_orientation"
+    if args.arm == "keypoints":
+        if args.output == OUTPUT:
+            args.output = KEYPOINT_OUTPUT
+        if not (0.0 < args.scale < 1e3) or not (0.0 < args.radius_fraction < 1e3):
+            raise SystemExit("--scale and --radius-fraction must be finite and positive")
     if args.arm == "exponential":
         if args.output == OUTPUT:
             args.output = OUTPUT.with_name("orientation_exp_recon_body_flash_sac.yaml")
@@ -147,9 +160,9 @@ def main() -> int:
         "#",
         "# NVIDIA's recon_body_flash_sac curriculum with one key added to every stage.",
         "# Thresholds, VOC schedule, reset probabilities and the original twelve",
-        "# weights are copied verbatim; only 'object_orientation' is new.",
+        f"# weights are copied verbatim; only '{term}' is new.",
         f"# source: configs/curriculum/recon_body_flash_sac.yaml @ sha256:{upstream_sha[:16]}",
-        f"# object_orientation weight: {args.weight}  ({args.arm} shaping)",
+        f"# {term} weight: {args.weight}  ({args.arm} shaping)",
         "",
         "_target_: flash_chord.configuration.make_fixed_curriculum",
         "",
@@ -164,7 +177,7 @@ def main() -> int:
             lines.append("    objective_weights: &orientation_recon_body_weights")
             for name, value in EXPECTED_WEIGHTS:
                 lines.append(f"      {name}: {value}")
-            lines.append(f"      object_orientation: {args.weight}")
+            lines.append(f"      {term}: {args.weight}")
         else:
             lines.append("    objective_weights: *orientation_recon_body_weights")
         if immediate is not None:
@@ -177,17 +190,18 @@ def main() -> int:
     upstream_target = "_target_: flash_chord.objectives.recon_body.ReconBodyObjectiveConfig"
     if upstream_target not in objective_text:
         raise SystemExit("upstream objective config no longer declares the expected _target_")
-    local_target = (
-        "pipeline.flash_sac_orientation.OrientationReconBodyObjectiveConfig"
-        if args.arm == "squared"
-        else "pipeline.flash_sac_orientation_exp.ExponentialOrientationReconBodyObjectiveConfig"
-    )
+    local_target = {
+        "squared": "pipeline.flash_sac_orientation.OrientationReconBodyObjectiveConfig",
+        "exponential": "pipeline.flash_sac_orientation_exp.ExponentialOrientationReconBodyObjectiveConfig",
+        "keypoints": "pipeline.flash_sac_keypoints.KeypointReconBodyObjectiveConfig",
+    }[args.arm]
     objective_body = objective_text.replace(upstream_target, f"_target_: {local_target}")
-    shaping_note = (
-        "-(theta / pi) ** 2, a bounded penalty in [-1, 0]"
-        if args.arm == "squared"
-        else f"exp(-theta ** 2 / {args.std} ** 2), upstream's own orientation shaping, in (0, 1]"
-    )
+    shaping_note = {
+        "squared": "-(theta / pi) ** 2, a bounded penalty in [-1, 0]",
+        "exponential": f"exp(-theta ** 2 / {args.std} ** 2), upstream's own orientation shaping, in (0, 1]",
+        "keypoints": f"mean_i exp(-|k_i - k_i*| / {args.scale}), six axis keypoints at "
+        f"{args.radius_fraction} x the bounding radius, upstream's Laplacian, in (0, 1]",
+    }[args.arm]
     objective_lines = [
         "# GENERATED by scripts/train/make_orientation_curriculum.py -- do not edit by hand.",
         "#",
@@ -198,15 +212,18 @@ def main() -> int:
         f"# shaping: {shaping_note}",
         "",
         objective_body.rstrip("\n"),
-        f"object_orientation_weight: {args.weight}",
+        f"{term}_weight: {args.weight}",
     ]
     if args.arm == "exponential":
         objective_lines.append(f"object_orientation_std: {args.std}")
-    objective_output = (
-        OBJECTIVE_OUTPUT
-        if args.arm == "squared"
-        else OBJECTIVE_OUTPUT.with_name("orientation_exp_recon_body.yaml")
-    )
+    if args.arm == "keypoints":
+        objective_lines.append(f"object_keypoints_scale: {args.scale}")
+        objective_lines.append(f"object_keypoints_radius_fraction: {args.radius_fraction}")
+    objective_output = {
+        "squared": OBJECTIVE_OUTPUT,
+        "exponential": OBJECTIVE_OUTPUT.with_name("orientation_exp_recon_body.yaml"),
+        "keypoints": KEYPOINT_OBJECTIVE_OUTPUT,
+    }[args.arm]
     objective_output.parent.mkdir(parents=True, exist_ok=True)
     objective_output.write_text("\n".join(objective_lines) + "\n")
 
@@ -215,7 +232,7 @@ def main() -> int:
     print(f"wrote {args.output.relative_to(REPO)}")
     print(f"  upstream sha256 : {upstream_sha}")
     print(f"  stages          : {len(stages)}  thresholds: {len(thresholds)}")
-    print(f"  weights/stage   : {len(EXPECTED_WEIGHTS) + 1} (12 upstream + object_orientation={args.weight})")
+    print(f"  weights/stage   : {len(EXPECTED_WEIGHTS) + 1} (12 upstream + {term}={args.weight})")
     print(f"wrote {objective_output.relative_to(REPO)}")
     print(f"  upstream sha256 : {objective_sha}")
     return 0

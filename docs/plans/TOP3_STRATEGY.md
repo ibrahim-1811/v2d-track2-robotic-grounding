@@ -97,6 +97,12 @@ Per-episode discipline, from the phase profile:
 Reproducing CHORD lands around 0.51. Third place needs 0.60. Three sources of
 the remaining ~0.09, in order of confidence:
 
+> **WITHDRAWN 2026-10-25.** The FAQ requires object trajectories *from learned policies*
+> for all 30 episodes, so a frozen-object trajectory may not be submitted in place of a
+> policy's. Choose among learned checkpoints and seeds instead (see (c)). Also note the final
+> rank is a sum of ranks over all four metrics, not AUC alone —
+> `docs/findings/KEYPOINT_OBJECTIVE.md` §1.
+
 **(a) Never ship a regression — worth up to +0.08 on its own.**
 For every episode, compare the trained policy's local AUC against that episode's
 stationary floor and keep the better trajectory. Our current entry loses to

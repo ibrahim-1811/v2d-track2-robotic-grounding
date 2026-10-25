@@ -33,7 +33,7 @@ fc() {
   docker run --rm --gpus all \
     -v "$PWD/$FC:/workspace" \
     -v "$PWD/$ASSETS:/v2d/assets:ro" \
-    -v "$PWD/scripts/flashchord_headless_replay.py:/driver/flashchord_headless_replay.py:ro" \
+    -v "$PWD/scripts/diagnose/flashchord_headless_replay.py:/driver/flashchord_headless_replay.py:ro" \
     -v "$(dirname "$TRACE"):/trace" \
     ${extra[0]+"${extra[@]}"} \
     -w /workspace flash_chord:latest bash -lc "$1"

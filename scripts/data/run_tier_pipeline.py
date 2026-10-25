@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run Step A + Step B over every episode of one challenge tier.
 
-    .venvs/episode0/bin/python scripts/run_tier_pipeline.py <stage> [options]
+    .venvs/episode0/bin/python scripts/data/run_tier_pipeline.py <stage> [options]
 
 Stages (each one is independently re-runnable and resumable):
 
@@ -65,8 +65,8 @@ from pipeline.episodes import (  # noqa: E402
 RETARGET_IMAGE = "robotic-grounding:latest"
 FLASHCHORD_IMAGE = "flash_chord:latest"
 SOMA_ASSETS = REPO / "data/body_models/soma"
-DRIVER = REPO / "scripts/retarget_episode_g1.py"
-FLASHCHORD_DRIVER = REPO / "scripts/check_reference_in_flashchord.py"
+DRIVER = REPO / "scripts/data/retarget_episode_g1.py"
+FLASHCHORD_DRIVER = REPO / "scripts/diagnose/check_reference_in_flashchord.py"
 FLASHCHORD_ROOT = REPO / "official/video_to_data/robotic_grounding/flash_chord"
 UPSTREAM_ASSETS = (
     REPO
@@ -1011,7 +1011,7 @@ def _write_reference_index(
         "tier": tier,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "note": (
-            "Produced by scripts/run_tier_pipeline.py report. 'usable' means "
+            "Produced by scripts/data/run_tier_pipeline.py report. 'usable' means "
             "stage+retarget+validate+flashchord all passed for that episode. "
             "Train on this tier's own references only: tiers are scored "
             "separately and a Tier N policy must not see Tier M motion."
@@ -1044,7 +1044,7 @@ def _render_markdown(summary: dict) -> str:
     add = lines.append
     add(f"# Track 2 G1 references - {summary['tier']}")
     add("")
-    add(f"Generated {summary['generated_at']} by `scripts/run_tier_pipeline.py report`.")
+    add(f"Generated {summary['generated_at']} by `scripts/data/run_tier_pipeline.py report`.")
     add("")
     add(f"- episodes: **{summary['episodes_passing']} / {summary['episodes_total']} "
         f"fully validated**")
@@ -1179,6 +1179,14 @@ def main() -> int:
                              "re-running the retarget. Non-destructive - the "
                              "existing reference is read, never overwritten.")
     args = parser.parse_args()
+
+    # `docker run -v <missing file>:...` does not fail: Docker creates an empty
+    # directory at the host path, and every episode then dies with "can't find
+    # '__main__' module". That is how the repo restructure broke Tier 2's retarget.
+    for driver in (DRIVER, FLASHCHORD_DRIVER):
+        if not driver.is_file():
+            print(f"driver script missing or not a file: {driver}", file=sys.stderr)
+            return 2
 
     try:
         if args.stage == "all":

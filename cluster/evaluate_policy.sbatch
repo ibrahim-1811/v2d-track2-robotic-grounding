@@ -1,6 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=v2d-eval
-#SBATCH --partition=gpu4
+#SBATCH --partition=gpu
+# V100 nodes wr14-19 cannot run the SONIC controller (onnxruntime CUDA: "CUBLAS failure 8:
+# architectural feature absent", sm_70), so gpu-partition evaluations use its A100 nodes.
+#SBATCH --exclude=wr[14-19]
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -33,16 +36,35 @@ FLOOR=${FLOOR:-0.3769}
 
 CKPT=/out/$RUN/policy_${STEP}.safetensors
 test -f "$OUT/$RUN/policy_${STEP}.safetensors" || { echo "missing $OUT/$RUN/policy_${STEP}.safetensors"; exit 2; }
-EVAL=$RUN/eval_${STEP}
+# A thirteen-term checkpoint names our training module, which the unchanged evaluator
+# cannot import: project it once (actor tensors byte-identical) and evaluate that copy.
+PORTABLE=portable_policy_${STEP}.safetensors
+if [ ! -f "$OUT/$RUN/$PORTABLE" ]; then
+  (cd "$R" && python3 -m pipeline.flash_sac_actor_export "$OUT/$RUN/policy_${STEP}.safetensors" "$OUT/$RUN/$PORTABLE")
+  rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 10 ] || { echo "actor export failed (exit $rc)"; exit 2; }
+fi
+[ -f "$OUT/$RUN/$PORTABLE" ] && CKPT=/out/$RUN/$PORTABLE
+# EVAL_TAG keeps test or alternative evaluations out of the canonical eval_<step> folder.
+EVAL=$RUN/eval_${STEP}${EVAL_TAG:+_$EVAL_TAG}
+[ -e "$OUT/$EVAL/rep1.json" ] && { echo "refusing to overwrite existing $OUT/$EVAL (set EVAL_TAG)"; exit 3; }
 mkdir -p "$OUT/$EVAL" "$OUT/warp_cache" "$OUT/tmp/$SLURM_JOB_ID"
-echo "job $SLURM_JOB_ID on $(hostname): $CKPT x $REPEATS, world_count=1, episode $EPISODE"
+echo "job $SLURM_JOB_ID on $(hostname): $CKPT x $REPEATS, world_count=1, episode $EPISODE -> $EVAL"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+# Every staged tier tree, each at its own /work/<name>: a checkpoint bakes its tier's
+# absolute parquet path, so Tier 2 policies need /work/adapter_out_tier_2.
+DATA_BINDS=()
+for tree in "$R"/data/adapter_out*; do
+  [ -d "$tree" ] && DATA_BINDS+=(-B "$tree:/work/$(basename "$tree"):ro")
+done
 
 run() {
   apptainer exec --nv --cleanenv \
     --no-mount bind-paths,home,cwd \
     -B "$FC":/workspace \
     -B "$ASSETS":/v2d/assets:ro \
-    -B "$R/data/adapter_out":/work/adapter_out:ro \
+    "${DATA_BINDS[@]}" \
     -B "$OUT":/out \
     -B "$OUT/tmp/$SLURM_JOB_ID":/tmp \
     --env XLA_PYTHON_CLIENT_PREALLOCATE=false \

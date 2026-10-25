@@ -18,6 +18,14 @@
 #   TAG=ep21_stock SEQ=2026-04-29_11-53-57_tall_bar_stool_pull_08 SUPPORT=false \
 #       sbatch cluster/train_flash_sac.sbatch
 #   EXTRA="training.total_environment_steps=2048000" TAG=smoke sbatch ...   # short test
+#
+# CONFIGS=<dir under configs/> mounts our own Hydra groups (objective/, curriculum/) at
+# /v2d/configs, for the thirteen-term objectives; select them through EXTRA:
+#   CONFIGS=keypoints EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac" ...
+#
+# A NaN watchdog stops the job at the first non-finite metrics line: a diverged FlashSAC
+# run never recovers (Episode 7's seed-42 run trained 6.5 h on NaN). Resume from the last
+# state_*.safetensors before the NaN with training.resume=true training.checkpoint_path=...
 set -euo pipefail
 
 R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
@@ -28,14 +36,28 @@ ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robo
 TAG=${TAG:-ep0_stock_nvidia_recipe}
 SEQ=${SEQ:-2026-06-04_14-16-23_tall_bar_stool_tip_up_04}
 SUPPORT=${SUPPORT:-false}
+SEED=${SEED:-42}
 EXTRA=${EXTRA:-}
+CONFIGS=${CONFIGS:-}
+# Staged tree under data/, mounted at the same name under /work: every tier bakes its own
+# absolute object-mesh paths (/work/adapter_out, /work/adapter_out_tier_2, ...).
+ADAPTER=${ADAPTER:-adapter_out}
+
+CONFIG_ARGS=()
+if [ -n "$CONFIGS" ]; then
+  test -d "$R/configs/$CONFIGS"
+  CONFIG_ARGS=(-B "$R/configs/$CONFIGS":/v2d/configs:ro)
+fi
+CONFIG_DIR_ARGS=()
+[ -n "$CONFIGS" ] && CONFIG_DIR_ARGS=(--config-dir /v2d/configs)
+LOG="$R/logs/train_${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
 
 OUT=$R/outputs/cluster
 mkdir -p "$OUT/$TAG" "$OUT/warp_cache" "$OUT/tmp/$SLURM_JOB_ID"
-PARQUET="/work/adapter_out/whole_body/soma/sequence_id=${SEQ}/robot_name=g1/data.parquet"
-test -f "$R/data/adapter_out/whole_body/soma/sequence_id=${SEQ}/robot_name=g1/data.parquet"
+PARQUET="/work/${ADAPTER}/whole_body/soma/sequence_id=${SEQ}/robot_name=g1/data.parquet"
+test -f "$R/data/${ADAPTER}/whole_body/soma/sequence_id=${SEQ}/robot_name=g1/data.parquet"
 
-echo "job $SLURM_JOB_ID on $(hostname), tag=$TAG seq=$SEQ support=$SUPPORT extra='$EXTRA'"
+echo "job $SLURM_JOB_ID on $(hostname), tag=$TAG seq=$SEQ support=$SUPPORT seed=$SEED adapter=$ADAPTER configs='$CONFIGS' extra='$EXTRA'"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 git -C "$R" rev-parse --short HEAD
 git -C "$R/official/video_to_data" rev-parse --short HEAD
@@ -46,8 +68,9 @@ apptainer exec --nv --cleanenv \
   --no-mount bind-paths,home,cwd \
   -B "$FC":/workspace \
   -B "$ASSETS":/v2d/assets:ro \
-  -B "$R/data/adapter_out":/work/adapter_out:ro \
+  -B "$R/data/${ADAPTER}":"/work/${ADAPTER}":ro \
   -B "$R/pipeline":/v2d/repo/pipeline:ro \
+  "${CONFIG_ARGS[@]}" \
   -B "$OUT":/out \
   -B "$OUT/tmp/$SLURM_JOB_ID":/tmp \
   --env HOME=/tmp \
@@ -57,6 +80,7 @@ apptainer exec --nv --cleanenv \
   --pwd /workspace \
   "$SIF" \
   python -m pipeline.flash_sac_train_entry \
+    "${CONFIG_DIR_ARGS[@]}" \
     experiment=g1_recon_body_flash_sac \
     "task.parquet='${PARQUET}'" \
     scene.world_count=2048 \
@@ -65,9 +89,35 @@ apptainer exec --nv --cleanenv \
     training.updates_per_collection=4.0 \
     training.replay.capacity=10000000 \
     training.checkpoint.save_replay=false \
-    training.seed=42 \
-    reset.seed=42 \
+    training.seed="$SEED" \
+    reset.seed="$SEED" \
     logging.mode=disabled \
     output_dir="/out/$TAG" \
     hydra.run.dir="/out/$TAG/hydra" \
-    $EXTRA
+    $EXTRA &
+TRAIN=$!
+
+# AUTO_RESUME=N lets the watchdog resubmit this run up to N times from the newest
+# state_*.safetensors saved before the NaN, with seed+1 (Episode 7 diverges every ~75M steps).
+AUTO_RESUME=${AUTO_RESUME:-0}
+while kill -0 "$TRAIN" 2>/dev/null; do
+  if grep -q 'rew=+*nan' "$LOG" 2>/dev/null; then
+    nan_step=$(grep -m1 -oP 'step=\K[0-9,]+(?=\s+rew=\+?nan)' "$LOG" | tr -d ,)
+    echo "NaN watchdog: metrics non-finite since step $nan_step; stopping"
+    kill "$TRAIN"
+    wait "$TRAIN" || true
+    state=$(ls "$OUT/$TAG"/state_*.safetensors 2>/dev/null | sed -E 's/.*state_([0-9]+)\.safetensors/\1/' \
+            | awk -v n="$nan_step" '$1 < n' | sort -n | tail -1)
+    if [ "$AUTO_RESUME" -gt 0 ] && [ -n "$state" ]; then
+      base=$(sed -E 's/training\.(resume|checkpoint_path)=[^ ]*//g' <<<"$EXTRA")
+      jid=$(TAG="$TAG" SEQ="$SEQ" SUPPORT="$SUPPORT" ADAPTER="$ADAPTER" CONFIGS="$CONFIGS" \
+            SEED=$((SEED + 1)) AUTO_RESUME=$((AUTO_RESUME - 1)) \
+            EXTRA="$base training.resume=true training.checkpoint_path=/out/$TAG/state_${state}.safetensors" \
+            sbatch --parsable --job-name="$SLURM_JOB_NAME" --time=12:00:00 "$R/cluster/train_flash_sac.sbatch")
+      echo "NaN watchdog: resubmitted from state_${state} with seed $((SEED + 1)) as job $jid ($((AUTO_RESUME - 1)) resumes left)"
+    fi
+    exit 3
+  fi
+  sleep 60
+done
+wait "$TRAIN"

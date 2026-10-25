@@ -15,6 +15,7 @@ import pytest
 
 from pipeline.flash_sac_actor_export import (
     CONFIG_KEY,
+    KEYPOINT_TARGET,
     ORIENTATION_TARGET,
     REWARD_DEFINITION_KEY,
     TRAINING_CONFIG_KEY,
@@ -279,3 +280,61 @@ def test_written_payload_starts_eight_byte_aligned(tmp_path) -> None:
     blob = path.read_bytes()
     (length,) = struct.unpack("<Q", blob[:8])
     assert (8 + length) % 8 == 0
+
+
+# --- the keypoint arm --------------------------------------------------------
+
+
+def keypoint_training_config() -> dict:
+    config = training_config()
+    objective = {key: value for key, value in OBJECTIVE.items() if key != "object_orientation_weight"}
+    objective.update(
+        {
+            "_target_": KEYPOINT_TARGET,
+            "object_keypoints_weight": 5.0,
+            "object_keypoints_scale": 0.05,
+            "object_keypoints_radius_fraction": 0.5,
+        }
+    )
+    stage = {**STAGE, "objective_weights": {**{name: 1.0 for name in UPSTREAM_TERM_NAMES}, "object_keypoints": 5.0}}
+    curriculum = {**CURRICULUM, "stages": [stage, stage]}
+    config["objective"] = config["env"]["objective"] = copy.deepcopy(objective)
+    config["curriculum"] = config["training"]["curriculum"] = copy.deepcopy(curriculum)
+    return config
+
+
+def test_keypoint_objective_projects_to_upstream() -> None:
+    projected = project_evaluation_config(keypoint_training_config())
+    for objective in (projected["objective"], projected["env"]["objective"]):
+        assert objective["_target_"] == UPSTREAM_TARGET
+        assert not any(key.startswith("object_keypoints") for key in objective)
+    for curriculum in (projected["curriculum"], projected["training"]["curriculum"]):
+        assert all(set(stage["objective_weights"]) == set(UPSTREAM_TERM_NAMES) for stage in curriculum["stages"])
+    note = projected["_orientation_projection"]
+    assert (note["removed_term"], note["removed_weight"]) == ("object_keypoints", 5.0)
+    assert note["removed_objective_target"] == KEYPOINT_TARGET
+
+
+def test_keypoint_objective_missing_its_scale_is_refused() -> None:
+    config = keypoint_training_config()
+    del config["objective"]["object_keypoints_scale"]
+    with pytest.raises(ExportError, match="object_keypoints_scale"):
+        project_evaluation_config(config)
+
+
+def test_mixed_objective_targets_are_refused() -> None:
+    config = keypoint_training_config()
+    config["env"]["objective"] = copy.deepcopy(OBJECTIVE)
+    with pytest.raises(ExportError, match="disagree"):
+        project_evaluation_config(config)
+
+
+def test_keypoint_export_records_its_own_reward_definition(tmp_path) -> None:
+    source = tmp_path / "policy.safetensors"
+    make_checkpoint(source, {CONFIG_KEY: json.dumps(keypoint_training_config()), "user.checkpoint_kind": "policy"})
+    destination = tmp_path / "portable.safetensors"
+    export_official_actor(source, destination)
+    metadata = read_checkpoint(destination)[0]["__metadata__"]
+    assert "object_keypoints = mean over upstream's six object axes" in metadata[REWARD_DEFINITION_KEY]
+    assert "object_keypoints" in metadata["user.export_warning"]
+    assert json.loads(metadata[TRAINING_CONFIG_KEY])["objective"]["_target_"] == KEYPOINT_TARGET

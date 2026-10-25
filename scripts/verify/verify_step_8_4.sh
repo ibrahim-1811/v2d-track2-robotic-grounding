@@ -53,7 +53,7 @@ echo
 echo "=== 5. upstream's own validator + our npz against the real read_soma ==="
 docker run --rm -v "$PWD/data/body_models/soma:/staging/soma:ro" \
   -v "$PWD/data/adapter_out/whole_body/soma/$SEQ:/staging/episode0:ro" \
-  -v "$PWD/scripts/validate_soma_in_container.py:/staging/validate.py:ro" \
+  -v "$PWD/scripts/data/validate_soma_in_container.py:/staging/validate.py:ro" \
   --entrypoint bash robotic-grounding:latest \
   -lc 'python /staging/validate.py /staging/soma /staging/episode0' 2>&1 \
   | grep -E "^  (PASS|FAIL)" || { echo "  FAIL  container validation did not run"; FAILED=1; }

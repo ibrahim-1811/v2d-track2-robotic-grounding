@@ -31,8 +31,8 @@ fc() {
   docker run --rm --gpus all \
     -v "$PWD/$FC:/workspace" \
     -v "$PWD/$ASSETS:/v2d/assets:ro" \
-    -v "$PWD/scripts/inspect_checkpoint.py:/driver/inspect_checkpoint.py:ro" \
-    -v "$PWD/scripts/check_unassisted.py:/driver/check_unassisted.py:ro" \
+    -v "$PWD/scripts/diagnose/inspect_checkpoint.py:/driver/inspect_checkpoint.py:ro" \
+    -v "$PWD/scripts/evaluate/check_unassisted.py:/driver/check_unassisted.py:ro" \
     ${extra[0]+"${extra[@]}"} \
     -w /workspace flash_chord:latest bash -lc "$1"
 }

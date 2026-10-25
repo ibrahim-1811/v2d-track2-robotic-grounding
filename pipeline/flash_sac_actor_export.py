@@ -64,6 +64,40 @@ REWARD_DEFINITION = (
     "Stored raw in replay; weighted and frame_dt-scaled only during reward "
     "composition and relabeling."
 )
+EXPONENTIAL_ORIENTATION_TARGET = (
+    "pipeline.flash_sac_orientation_exp.ExponentialOrientationReconBodyObjectiveConfig"
+)
+EXPONENTIAL_REWARD_DEFINITION = (
+    "object_orientation = exp(-theta ** 2 / object_orientation_std ** 2), theta as in the "
+    "squared arm. Stored raw in replay; weighted and frame_dt-scaled only during reward "
+    "composition and relabeling."
+)
+KEYPOINT_TARGET = "pipeline.flash_sac_keypoints.KeypointReconBodyObjectiveConfig"
+KEYPOINT_TERM = "object_keypoints"
+KEYPOINT_REWARD_DEFINITION = (
+    "object_keypoints = mean over upstream's six object axes e_i of "
+    "exp(-|(p + R r e_i) - (p* + R* r e_i)| / object_keypoints_scale), r = "
+    "object_keypoints_radius_fraction * command.object_radius (bounding-ball radius); "
+    "(p, R) the object's Newton body pose, (p*, R*) command.body_target_pos_w/quat_w (xyzw). "
+    "Stored raw in replay; weighted and frame_dt-scaled only during reward "
+    "composition and relabeling."
+)
+
+#: Every thirteen-term objective we train, keyed by its ``_target_``: the appended
+#: term, the config fields only it defines (its weight first), and its definition.
+THIRTEENTH_TERM_OBJECTIVES: dict[str, tuple[str, tuple[str, ...], str]] = {
+    ORIENTATION_TARGET: (ORIENTATION_TERM, (ORIENTATION_WEIGHT_FIELD,), REWARD_DEFINITION),
+    EXPONENTIAL_ORIENTATION_TARGET: (
+        ORIENTATION_TERM,
+        (ORIENTATION_WEIGHT_FIELD, "object_orientation_std"),
+        EXPONENTIAL_REWARD_DEFINITION,
+    ),
+    KEYPOINT_TARGET: (
+        KEYPOINT_TERM,
+        ("object_keypoints_weight", "object_keypoints_scale", "object_keypoints_radius_fraction"),
+        KEYPOINT_REWARD_DEFINITION,
+    ),
+}
 
 #: Config subtrees that must be identical between the native and the projected
 #: runtime config. Only the objective schema and the orientation weight may move.
@@ -115,21 +149,25 @@ def tensor_index(header: Mapping[str, Any]) -> dict[str, Any]:
 # --- the projection ---------------------------------------------------------
 
 
-def _project_objective(objective: dict[str, Any]) -> tuple[dict[str, Any], float]:
-    if objective.get("_target_") != ORIENTATION_TARGET:
+def _project_objective(objective: dict[str, Any]) -> tuple[dict[str, Any], float, str]:
+    """Return the upstream-only objective, the removed weight and the local target."""
+    target = objective.get("_target_")
+    if target not in THIRTEENTH_TERM_OBJECTIVES:
         raise ExportError(
-            f"objective._target_ is {objective.get('_target_')!r}; expected {ORIENTATION_TARGET!r}. "
-            "This checkpoint was not produced by the orientation objective."
+            f"objective._target_ is {target!r}; expected one of {sorted(THIRTEENTH_TERM_OBJECTIVES)}. "
+            "This checkpoint was not produced by a thirteen-term objective."
         )
+    _, fields, _ = THIRTEENTH_TERM_OBJECTIVES[target]
     projected = dict(objective)
-    weight = projected.pop(ORIENTATION_WEIGHT_FIELD, None)
-    if weight is None:
-        raise ExportError(f"objective is missing {ORIENTATION_WEIGHT_FIELD}")
+    removed = {field: projected.pop(field, None) for field in fields}
+    missing = [field for field, value in removed.items() if value is None]
+    if missing:
+        raise ExportError(f"objective is missing {', '.join(missing)}")
     projected["_target_"] = UPSTREAM_TARGET
     unexpected = set(projected) - set(_upstream_objective_fields())
     if unexpected:
         raise ExportError(f"objective carries keys upstream does not define: {sorted(unexpected)}")
-    return projected, float(weight)
+    return projected, float(removed[fields[0]]), target
 
 
 def _upstream_objective_fields() -> frozenset[str]:
@@ -155,7 +193,7 @@ def _upstream_objective_fields() -> frozenset[str]:
     )
 
 
-def _project_curriculum(curriculum: dict[str, Any], where: str) -> dict[str, Any]:
+def _project_curriculum(curriculum: dict[str, Any], where: str, term: str = ORIENTATION_TERM) -> dict[str, Any]:
     stages = curriculum.get("stages")
     if not isinstance(stages, list) or not stages:
         raise ExportError(f"{where} has no stages")
@@ -166,9 +204,9 @@ def _project_curriculum(curriculum: dict[str, Any], where: str) -> dict[str, Any
         weights = stage.get("objective_weights")
         if not isinstance(weights, dict):
             raise ExportError(f"{where} stage {index} has no objective_weights")
-        if ORIENTATION_TERM not in weights:
-            raise ExportError(f"{where} stage {index} has no {ORIENTATION_TERM} weight to project away")
-        remaining = {name: value for name, value in weights.items() if name != ORIENTATION_TERM}
+        if term not in weights:
+            raise ExportError(f"{where} stage {index} has no {term} weight to project away")
+        remaining = {name: value for name, value in weights.items() if name != term}
         if set(remaining) != set(UPSTREAM_TERM_NAMES):
             raise ExportError(
                 f"{where} stage {index} would leave {sorted(remaining)}; expected upstream's twelve terms"
@@ -200,26 +238,32 @@ def project_evaluation_config(training_config: Mapping[str, Any]) -> dict[str, A
         return node, parts[-1]
 
     weights: set[float] = set()
+    targets: set[str] = set()
     projected_objectives = 0
     for path in _OBJECTIVE_PATHS:
         node, leaf = parent_of(path)
         if not isinstance(node, dict) or leaf not in node:
             continue
-        node[leaf], weight = _project_objective(node[leaf])
+        node[leaf], weight, target = _project_objective(node[leaf])
         weights.add(weight)
+        targets.add(target)
         projected_objectives += 1
     if projected_objectives == 0:
         raise ExportError("training config has no objective to project")
+    if len(targets) != 1:
+        raise ExportError(f"objective copies disagree on the objective target: {sorted(targets)}")
     if len(weights) != 1:
-        raise ExportError(f"objective copies disagree on the orientation weight: {sorted(weights)}")
+        raise ExportError(f"objective copies disagree on the thirteenth-term weight: {sorted(weights)}")
     weight = weights.pop()
+    target = targets.pop()
+    term = THIRTEENTH_TERM_OBJECTIVES[target][0]
 
     projected_curricula = 0
     for path in _CURRICULUM_PATHS:
         node, leaf = parent_of(path)
         if not isinstance(node, dict) or leaf not in node:
             continue
-        node[leaf] = _project_curriculum(node[leaf], path)
+        node[leaf] = _project_curriculum(node[leaf], path, term)
         projected_curricula += 1
     if projected_curricula == 0:
         raise ExportError("training config has no curriculum to project")
@@ -240,14 +284,14 @@ def project_evaluation_config(training_config: Mapping[str, Any]) -> dict[str, A
             raise ExportError(f"projection changed env keys that must be preserved: {sorted(changed)}")
 
     remaining = json.dumps(config)
-    if ORIENTATION_TARGET in remaining:
+    if any(local in remaining for local in THIRTEENTH_TERM_OBJECTIVES):
         raise ExportError("projected config still names the local training module")
-    if f'"{ORIENTATION_TERM}"' in remaining:
-        raise ExportError("projected config still carries an object_orientation weight")
+    if f'"{term}"' in remaining:
+        raise ExportError(f"projected config still carries an {term} weight")
     config["_orientation_projection"] = {
         "note": "EVALUATION RECONSTRUCTION ONLY. This is not the reward that trained the actor.",
-        "removed_objective_target": ORIENTATION_TARGET,
-        "removed_term": ORIENTATION_TERM,
+        "removed_objective_target": target,
+        "removed_term": term,
         "removed_weight": weight,
         "training_config_key": TRAINING_CONFIG_KEY,
     }
@@ -290,11 +334,13 @@ def export_official_actor(
 
     training_config = json.loads(metadata[CONFIG_KEY])
     evaluation_config = project_evaluation_config(training_config)
+    target = evaluation_config["_orientation_projection"]["removed_objective_target"]
+    term, _, definition = THIRTEENTH_TERM_OBJECTIVES[target]
 
     exported = dict(metadata)
     exported[CONFIG_KEY] = json.dumps(evaluation_config, separators=(",", ":"), sort_keys=True)
     exported[TRAINING_CONFIG_KEY] = metadata[CONFIG_KEY]
-    exported[REWARD_DEFINITION_KEY] = REWARD_DEFINITION
+    exported[REWARD_DEFINITION_KEY] = definition
     exported["user.export_kind"] = "orientation_projected_actor"
     exported["user.export_parent_sha256"] = _sha256(native_policy)
     exported["user.export_parent_name"] = native_policy.name
@@ -303,7 +349,7 @@ def export_official_actor(
     exported["user.export_objective_terms_evaluated"] = str(len(UPSTREAM_TERM_NAMES))
     exported["user.export_warning"] = (
         "resolved_config_json is an evaluation-only reconstruction. The actor was trained with "
-        "a thirteenth object_orientation reward term; see " + TRAINING_CONFIG_KEY
+        f"a thirteenth {term} reward term; see " + TRAINING_CONFIG_KEY
     )
     for name, value in (provenance or {}).items():
         exported[f"user.export_{name}"] = str(value)
@@ -319,3 +365,38 @@ def export_official_actor(
     if written_payload != payload:
         raise ExportError("exported tensor payload differs from the source")
     return destination
+
+
+#: ``main`` exit code for a stock twelve-term checkpoint: nothing to project, use it as-is.
+EXIT_STOCK = 10
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python3 -m pipeline.flash_sac_actor_export SOURCE DEST`` -- project only if needed.
+
+    Exit 0 when DEST was written, :data:`EXIT_STOCK` when SOURCE was trained by
+    upstream's own objective and the evaluator can load it unchanged.
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("source", type=Path)
+    parser.add_argument("destination", type=Path)
+    args = parser.parse_args(argv)
+    metadata = read_checkpoint(args.source)[0].get("__metadata__") or {}
+    target = json.loads(metadata.get(CONFIG_KEY, "{}")).get("objective", {}).get("_target_")
+    if target == UPSTREAM_TARGET:
+        print(f"{args.source.name}: stock twelve-term objective, no projection needed")
+        return EXIT_STOCK
+    try:
+        export_official_actor(args.source, args.destination)
+    except ExportError as error:
+        print(f"export failed: {error}", file=sys.stderr)
+        return 1
+    print(f"{args.source.name} ({target}) -> {args.destination}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
