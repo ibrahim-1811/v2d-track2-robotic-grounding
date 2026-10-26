@@ -39,6 +39,8 @@ for ep in $EPISODES; do
   fi
   name=$(printf 'v2d-%s-ep%02d' "$PREFIX" "$ep")
   [ "${ARM:-stock}" != stock ] && name="$name-${ARM:0:2}"
+  seed_suffix=""
+  [ -n "${SEED:-}" ] && [ "$SEED" != 42 ] && { seed_suffix="_s$SEED"; name="$name-s$SEED"; }
   cmd=(sbatch --parsable --job-name="$name" "${dep_arg[@]}" --export=ALL,EP="$ep",PREFIX="$PREFIX"
        "$R/cluster/train_tier_episode.sbatch")
   if [ "$DRY" = 1 ]; then
@@ -55,7 +57,7 @@ rows = [e for e in json.load(open(sys.argv[1]))["episodes"] if e["episode_index"
 print(rows[0]["stationary_auc"])
 PY
 )
-      run=$(printf '%s_ep%02d_%s' "$PREFIX" "$ep" "${ARM:-stock}")
+      run=$(printf '%s_ep%02d_%s%s' "$PREFIX" "$ep" "${ARM:-stock}" "$seed_suffix")
       eid=$(sbatch --parsable --job-name="${name/v2d-/v2d-eval-}" -t 01:00:00 \
             --dependency="afterok:$jid" --kill-on-invalid-dep=yes \
             --export=ALL,RUN="$run",STEP=349999104,REPEATS=5,EPISODE="$ep",FLOOR="$floor" \

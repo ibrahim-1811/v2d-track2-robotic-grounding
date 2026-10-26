@@ -9,16 +9,24 @@
 # rep 1 of the winner -- pre-declared), then runs the kit's unchanged tools/pack_submission.py,
 # which validates every frame against the clean reference and prints the four local scores.
 # Upload is a separate, deliberate step (submit/v2d_submit.py needs Kaggle credentials).
+#
+# Tier 2 trained on the recovered trajectory (scripts/data/recover_tier2_object.py) packs with its
+# own run prefix and the matching frame references:
+#   PREFIX=t2r FRAME_REFS=outputs/tier2r_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2
 set -euo pipefail
 R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
 TIER=${1:?usage: COMMIT_URL=... bash cluster/pack_tier.sh <1|2>}
 COMMIT_URL=${COMMIT_URL:?set COMMIT_URL to the GitHub /commit/<sha> that trained these policies}
-OUT=$R/outputs/submission/tier$TIER
+PREFIX=${PREFIX:-t$TIER}
+FRAME_REFS=${FRAME_REFS:-}
+OUT=$R/outputs/submission/$PREFIX
+REF_ARGS=()
+[ -n "$FRAME_REFS" ] && REF_ARGS=(--frame-references "/r/$FRAME_REFS")
 
 cd "$R"
-python3 scripts/evaluate/assemble_submission.py --prefix "t$TIER" -o "$OUT/results"
+python3 scripts/evaluate/assemble_submission.py --prefix "$PREFIX" -o "$OUT/results"
 apptainer exec --cleanenv --no-mount home,cwd -B "$R":/r --env PYTHONPATH=/r/.venvs/kit_site \
   --pwd /r/outputs/kit/v2d_submission_kit "$R/containers/flash_chord.sif" \
-  python tools/pack_submission.py --track "track_2_tier$TIER" --results "/r/outputs/submission/tier$TIER/results" \
-    --dataset-root /r/data/v2d_challenge --code-commit "$COMMIT_URL" \
-    -o "/r/outputs/submission/tier$TIER/track2_tier$TIER.csv" 2>&1 | grep -v pthread_setaffinity
+  python tools/pack_submission.py --track "track_2_tier$TIER" --results "/r/outputs/submission/$PREFIX/results" \
+    --dataset-root /r/data/v2d_challenge "${REF_ARGS[@]}" --code-commit "$COMMIT_URL" \
+    -o "/r/outputs/submission/$PREFIX/track2_tier$TIER.csv" 2>&1 | grep -v pthread_setaffinity

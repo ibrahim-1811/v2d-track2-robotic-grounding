@@ -42,7 +42,10 @@ export ADAPTER
 # ARM=stock (default) is NVIDIA's twelve-term objective; ARM=keypoints adds the ADD-shaped
 # object_keypoints term (pipeline/flash_sac_keypoints.py) through configs/keypoints/.
 ARM=${ARM:-stock}
-TAG=$(printf '%s_ep%02d_%s' "$PREFIX" "$EP" "$ARM")
+# Extra seeds get their own run: <prefix>_epNN_<arm>_s<seed>. Seed 42 keeps the bare name.
+SEED_SUFFIX=""
+[ -n "${SEED:-}" ] && [ "$SEED" != 42 ] && SEED_SUFFIX="_s$SEED"
+TAG=$(printf '%s_ep%02d_%s%s' "$PREFIX" "$EP" "$ARM" "$SEED_SUFFIX")
 echo "episode $EP -> tag=$TAG seq=$SEQ support=$SUPPORT arm=$ARM manifest=$MANIFEST"
 if [ -z "${EXTRA:-}" ] && [ -f "$R/outputs/cluster/$TAG/policy_${FINAL_STEP}.safetensors" ]; then
   echo "already trained: outputs/cluster/$TAG/policy_${FINAL_STEP}.safetensors -- nothing to do"

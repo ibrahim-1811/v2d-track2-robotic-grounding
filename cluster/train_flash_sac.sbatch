@@ -51,6 +51,12 @@ fi
 CONFIG_DIR_ARGS=()
 [ -n "$CONFIGS" ] && CONFIG_DIR_ARGS=(--config-dir /v2d/configs)
 LOG="$R/logs/train_${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+# Every staged tree, read-only, at its own /work/<name>: recovered references (adapter_out_tier_2r)
+# keep the object meshes of the tree they were derived from.
+DATA_BINDS=()
+for tree in "$R"/data/adapter_out*; do
+  [ -d "$tree" ] && DATA_BINDS+=(-B "$tree:/work/$(basename "$tree"):ro")
+done
 
 OUT=$R/outputs/cluster
 mkdir -p "$OUT/$TAG" "$OUT/warp_cache" "$OUT/tmp/$SLURM_JOB_ID"
@@ -68,7 +74,7 @@ apptainer exec --nv --cleanenv \
   --no-mount bind-paths,home,cwd \
   -B "$FC":/workspace \
   -B "$ASSETS":/v2d/assets:ro \
-  -B "$R/data/${ADAPTER}":"/work/${ADAPTER}":ro \
+  "${DATA_BINDS[@]}" \
   -B "$R/pipeline":/v2d/repo/pipeline:ro \
   "${CONFIG_ARGS[@]}" \
   -B "$OUT":/out \

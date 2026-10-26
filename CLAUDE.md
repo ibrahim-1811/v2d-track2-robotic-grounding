@@ -518,3 +518,33 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   the old paths in `run_tier_pipeline.py` and four `verify_*.sh` mounts; Tier 2's retarget
   failed 30/30 this way (2026-10-25, fixed). `run_tier_pipeline.py` now refuses to start
   if a driver is missing. Delete the root-owned empty dirs Docker left behind with `sudo rmdir`.
+- **First keypoint submission, Tier 1 (2026-10-26, Kaggle 57664273-80)**: AUC 0.77919,
+  SP-SR 0.86666, MP-SR 0.80000, MPPE 10.45054 — **identical to `pack_tier.sh`'s local
+  scores**, so pack locally to test anything before uploading. **The limit is 5 uploads per
+  WEEK per tier** (unlimited in the final 3 days): the uploader's "5 left today" is only Kaggle's
+  technical cap, and the kit's rules say the website's 5-per-week policy wins where they differ.
+  Each competition also allows **2 final submissions** — select them on Kaggle before the freeze.
+
+## Tier 2: what the corruption is, and the recovered trajectory (2026-10-26)
+
+- **Tier 2's object noise is a random walk, not jitter**: ~0 at frame 0, ~1 deg/frame,
+  clipped at **30 deg / 3 cm** (median 23 deg, 1.9 cm; jitter only 0.13 cm, so smoothing
+  does nothing). It keeps walking while the real object is static. Human motion is nearly
+  clean (~1 cm, <0.001 rad). Policies track the corrupted orientation faithfully, which is
+  what AUC and MP-SR (30 deg) punish.
+- **Static hold is the only recovery that helped**: hold the pose while the (smoothed)
+  object speed is below 3 cm/s, follow the measurement while it moves
+  (`scripts/data/recover_tier2_object.py`). Input AUC vs clean **0.422 -> 0.480**, 27/30
+  episodes better (worse: rice cooker, which turns in place). Carrying the orientation with
+  the nearest palm (`follow_palm`) was **much worse** (21 -> 75 deg): pushes, drags and
+  flips do not turn the object with the hand. Palm-spin motion detection lowered the mean.
+- `--write` produces `data/adapter_out_tier_2r` (G1 references; meshes stay in
+  `adapter_out_tier_2`, so training mounts every `data/adapter_out*` tree),
+  `outputs/tier2r_frame_references/episode_XXXXXX.npz` (released frame, for the packer's
+  `--frame-references`) and `training_manifest_tier2r.json`. Both come from one hold-index
+  map, so they agree to 1.4e-07 m / 9e-06 deg.
+- Tier 2's `hand_contact_active` is degraded (42% of frames vs Tier 1's 61%) — it was
+  computed against the noisy object. Do not trust it as a contact signal.
+- Pack recovered Tier 2 with
+  `PREFIX=t2r FRAME_REFS=outputs/tier2r_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2`.
+  Packing now writes to `outputs/submission/<prefix>/`.
