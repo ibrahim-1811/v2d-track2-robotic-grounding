@@ -640,7 +640,12 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   foot (URDF FK, checked against the stored palms: 0.00 cm) is within bounding radius + 0.10 m, with
   a 5-frame release. Parameters fixed from physics before scoring; no Tier 1 code path. Episodes
   0, 28, 29 are never held, so `t2c_ep{00,28,29}_keypoints` are symlinks to the identical-input t2 runs.
-- **Tighter keypoints** (`ARM=keypoints_tight`, scale 0.03) on Tier 1 eps 2, 9, 11, 17, 19, 26, 27.
+- **Tighter keypoints** (`ARM=keypoints_tight`, scale 0.03) made every finished episode WORSE [VERIFIED]:
+  ep02 0.679 vs 0.750, ep09 0.389 vs 0.577, ep11 0.509 vs 0.621 (5 repeats); 19/26/27 cancelled.
+- **Scripted grip** helped the squeegee (ep28 AUC 0.527 -> 0.581, MPPE 25.0 -> 6.2 cm) and the bat's MPPE
+  (rep1 101.9 -> 53.2 cm); vacuum and bottle unchanged. Best-per-episode Tier 1 now packs to about AUC
+  0.808 / SP-SR 0.900 / MP-SR 0.867 / MPPE 8.39 (evaluator rep1, before the packer).
+- `ARM=keypoints_gentle` = smooth + `action.residual_scale=0.075` (fingers keep 0.15); pilot on eps 8, 18, 23.
 - **Tier 3 batch 1 (2026-10-27): 15 of 20 references validate.** Eps 6 and 9: SAM3 handed frame 4 of the
   actor track to a 2.4k-px blob elsewhere (vs 34k px on the actor), so CARI4D put the human 2.5 m away
   for one frame; `sam3_text_masks.py` now drops such frames (area < 25% of median AND centroid jump >
