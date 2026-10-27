@@ -138,6 +138,48 @@ def object_glitch(mask: np.ndarray, anchor, expected_px: float, actor_height: fl
     return border or np.linalg.norm(np.array([xs.mean(), ys.mean()]) - anchor) / actor_height > 1.0
 
 
+def drop_glitch_components(mask: np.ndarray, anchor, expected_px: float, actor_height: float) -> np.ndarray:
+    """``mask`` without its connected components that are object_glitch on their own.
+
+    SAM3 often returns the held object and a border strip as ONE mask (episodes 3, 4, 17, 25: mug,
+    bat, cone, bottle). Judged whole, such a frame is a glitch and the object in it is lost -- 55 to
+    184 clean frames out of 545 to 858 -- and ``clean`` would keep the strip, the larger component.
+    Returns ``mask`` itself when nothing is dropped."""
+    count, labels, stats, centres = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if count <= 1 or anchor is None:
+        return mask
+    height, width = mask.shape
+    drop = []
+    for i in range(1, count):
+        x, y, w, h = stats[i, :4]
+        if max(w, h) - 1 <= 3.0 * expected_px:
+            continue
+        border = x <= 1 or y <= 1 or x + w - 1 >= width - 2 or y + h - 1 >= height - 2
+        if border or np.linalg.norm(centres[i] - anchor) / actor_height > 1.0:
+            drop.append(i)
+    return mask & ~np.isin(labels, drop) if drop else mask
+
+
+def contact_sheet(frames: list[np.ndarray], layers: list[tuple[dict, tuple[int, int, int]]], shape: tuple[int, int],
+                  path: Path, picks: list[int], width: int = 480) -> None:
+    """A 4-column grid of ``picks`` with each (seq, RGB colour) layer tinted on top -- for checking a mask
+    set by eye before CARI4D spends an hour on it."""
+    tiles = []
+    for f in picks:
+        image = frames[f].astype(np.float32)
+        for seq, colour in layers:
+            if f in seq:
+                mask = unpack(seq[f][0], shape)
+                image[mask] = 0.45 * image[mask] + 0.55 * np.array(colour, np.float32)
+        tile = cv2.resize(image.astype(np.uint8), (width, round(width * shape[0] / shape[1])))
+        cv2.putText(tile, str(f), (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        tiles.append(tile)
+    while len(tiles) % 4:
+        tiles.append(np.zeros_like(tiles[0]))
+    grid = np.vstack([np.hstack(tiles[i:i + 4]) for i in range(0, len(tiles), 4)])
+    cv2.imwrite(str(path), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+
 def implausible_object_frames(seq: dict, shape: tuple[int, int], expected_px: float, actor_centres: dict,
                               actor_height: float) -> list[int]:
     """The kept object's glitch frames (object_glitch); dropped and refilled by the tracker."""
@@ -224,9 +266,25 @@ def main() -> int:
 
         extent_m = float(np.max(trimesh.load(str(args.object_mesh), force="mesh").bounding_box.extents))
         expected_px = extent_m / HUMAN_HEIGHT_M * actor_height
+    raw = {oid: dict(seq) for oid, seq in objects.items()}
+    stripped = {oid: 0 for oid in objects}
+    emptied = {oid: 0 for oid in objects}
+    if expected_px is not None:
+        for oid, seq in objects.items():
+            for f, (bits, score) in list(seq.items()):
+                mask = unpack(bits, shape)
+                kept_mask = drop_glitch_components(mask, actor_centres.get(f), expected_px, actor_height)
+                if kept_mask is mask:
+                    continue
+                if kept_mask.any():
+                    seq[f] = (np.packbits(kept_mask), score)
+                    stripped[oid] += 1
+                else:
+                    del seq[f]  # all glitch: missing, so the tracker refills it
+                    emptied[oid] += 1
     near, fit = {}, {}
     for oid, seq in objects.items():
-        total, ratios, distances, glitch_frames = 0.0, [], [], 0
+        total, ratios, distances, glitch_frames = 0.0, [], [], emptied[oid]
         for f, (bits, score) in seq.items():
             mask = unpack(bits, shape)
             centre, anchor = centroid(mask), actor_centres.get(f)
@@ -248,12 +306,26 @@ def main() -> int:
         near[oid] = total
         fit[oid] = {"size_ratio_median": round(float(np.median(ratios)), 2) if ratios else None,
                     "actor_distance_median": round(float(np.median(distances)), 2) if distances else None,
-                    "glitch_frames": glitch_frames, "clean_frames": len(distances)}
+                    "glitch_frames": glitch_frames, "clean_frames": len(distances),
+                    "strip_removed_frames": stripped[oid]}
     object_id = max(near, key=near.get)
     chosen = fit[object_id]
-    if chosen["clean_frames"] < 0.25 * len(frames) or (chosen["size_ratio_median"] is not None
-                                                        and chosen["size_ratio_median"] > 3.0 and chosen["actor_distance_median"] > 1.0):
-        raise SystemExit(f"best {object_text!r} instance is implausible ({chosen}); refusing to hand CARI4D a wrong object")
+    wrong = (chosen["size_ratio_median"] is not None and chosen["size_ratio_median"] > 3.0
+             and chosen["actor_distance_median"] > 1.0)
+    # A hand covers a small held object for most of the video, so few clean frames is normal for it.
+    # Below a quarter of the video, accept the instance only on at least a second of evidence that is
+    # object-sized AND within reach on the median; the tracker fills the rest from its best frame.
+    low_evidence = chosen["clean_frames"] < 0.25 * len(frames)
+    if low_evidence and (expected_px is None or chosen["clean_frames"] < 30 or chosen["size_ratio_median"] > 3.0
+                         or chosen["actor_distance_median"] > 1.0):
+        wrong = True
+    if wrong:
+        seq = raw[object_id]
+        picks = sorted(seq)[:: max(1, len(seq) // 12)][:12]
+        contact_sheet(frames, [(seq, (255, 220, 0)), (objects[object_id], (255, 0, 0))], shape,
+                      args.masks_dir.with_name(args.masks_dir.name + ".refused.jpg"), picks)
+        raise SystemExit(f"best {object_text!r} instance is implausible ({chosen}; all instances {fit}); "
+                         "refusing to hand CARI4D a wrong object")
     object_glitches = []
     if expected_px is not None:
         object_glitches = implausible_object_frames(objects[object_id], shape, expected_px, actor_centres, actor_height)
@@ -279,6 +351,9 @@ def main() -> int:
         for f in range(len(frames)):
             mask = clean(unpack(seq[f][0], shape)) if f in seq else np.zeros(shape, bool)
             cv2.imwrite(str(out / f"{f:06d}.png"), mask.astype(np.uint8) * 255)
+    contact_sheet(frames, [(kept["0"], (0, 90, 255)), (kept["1"], (255, 0, 0))], shape, args.masks_dir / "overlay.jpg",
+                  [round(i * (len(frames) - 1) / 11) for i in range(12)])
+    args.masks_dir.with_name(args.masks_dir.name + ".refused.jpg").unlink(missing_ok=True)
 
     report = {
         "video": str(args.video_path),
@@ -293,6 +368,7 @@ def main() -> int:
         "object_instances_fit": {str(k): v for k, v in fit.items()},
         "object_expected_px": None if expected_px is None else round(float(expected_px), 1),
         "object_id": object_id,
+        "object_low_evidence": low_evidence,
         "detected_frames": detected,
         "tracker_seed_frame": seeds,
         "final_frames": {role: len(seq) for role, seq in kept.items()},
