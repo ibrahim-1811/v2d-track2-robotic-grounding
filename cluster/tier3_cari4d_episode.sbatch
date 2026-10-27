@@ -52,7 +52,7 @@ c4d() {
 if [ ! -f "$O/masks/$SEQ/selection.json" ]; then
   echo "== 1. SAM3 masks"
   c4d python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "${PROMPT:-$OBJ}" \
-    --masks_dir "$O/masks/$SEQ" --sam3_path "$W/sam3"
+    --masks_dir "$O/masks/$SEQ" --sam3_path "$W/sam3" --object_mesh "$T2/$MESH"
 fi
 if [ ! -f "$O/masks/${SEQ}_masks_k0.h5" ]; then
   echo "== 2. pack masks"

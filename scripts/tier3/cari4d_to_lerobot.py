@@ -328,7 +328,8 @@ def main() -> int:
     # the scene is placed by the human instead, and the object's body frame is relabelled by the
     # rigid S that makes frame 0 equal Tier 1's frame-0 object pose -- for a symmetric object S is
     # that symmetry, so its geometry does not move.
-    from scripts.tier3.frame0_alignment import Bodies, correction, tier1_first_frame_human
+    # A sibling import: inside cari4d.sif, CARI4D's own ``scripts`` package shadows ours.
+    from frame0_alignment import Bodies, correction, tier1_first_frame_human
 
     bodies = Bodies(args.device)
     frame0 = soma_inversion(to_frame(soma_from_camera, vertices_cam[:1]), identity, args.device)

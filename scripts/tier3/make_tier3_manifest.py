@@ -73,6 +73,12 @@ def main() -> int:
         # Validation cannot see a scene that is self-consistent but turned (episodes 12, 14: 178 and
         # 73 deg), so the frame-0 human alignment check must have passed too: either the converter
         # placed the scene by the human, or the object-only alignment agreed with it within 20 deg.
+        # A reference retargeted from an earlier conversion is stale (episodes 12 and 14 were
+        # re-aligned after batch 1 had been retargeted from the turned scene).
+        converted = tier_root / "data/chunk-000" / f"episode_{row['episode_index']:06d}.parquet"
+        if not converted.is_file() or reference.stat().st_mtime < converted.stat().st_mtime:
+            skipped.append(row["episode_index"])
+            continue
         conversion = tier_root / "conversion" / f"episode_{row['episode_index']:06d}.json"
         report = json.loads(conversion.read_text()) if conversion.is_file() else {}
         align = report.get("alignment") or report.get("alignment_check")

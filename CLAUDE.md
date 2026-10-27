@@ -660,6 +660,15 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   whose frame-0 orientation CARI4D resolves differently from the label. 12 and 14 had passed all 45
   checks. The converter now places the scene by the human when the gap exceeds 20 deg and relabels the
   object's body frame so frame 0 equals Tier 1's; the manifest also requires a passed alignment check.
+- **SAM3 picked the wrong object in 9 episodes** -- a strip along the left image border (2, 3, 4, 9, 16,
+  17, 20, 25, 27; in 2/16/25 only for 27-38% of frames). Area x proximity rewarded the big wrong region.
+  `sam3_text_masks.py --object_mesh` now scores instances by the object's expected image size (mesh
+  extent / 1.7 m x actor pixel height; no reward above it, log-normal fall-off past 1.5x), refuses an
+  implausible pick (>3x size and >1 actor height away), and drops single object frames that are both
+  (refilled by the tracker). Both mask sbatches pass the released Tier 2 mesh. Check with an overlay
+  before trusting any Tier 3 mask set.
+- The Tier 3 manifest skips a reference older than its conversion (re-aligned 12/14 after batch 1).
+  Stale conversions live in `data/reconstructed/superseded/` until their rerun lands.
 - `cluster/diagnose_jitter.sbatch` measures per-policy joint shake (mean step-to-step joint change
   of the simulated robot, unassisted world-1 rollout). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42,
   keypoints 0.74-1.07. **The smooth arm cuts it on every paired episode**: ep02 0.74 -> 0.60, ep04

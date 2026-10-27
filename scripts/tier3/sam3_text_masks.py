@@ -114,6 +114,34 @@ def clean(mask: np.ndarray, keep_fraction: float = 0.05) -> np.ndarray:
     return np.isin(labels, keep)
 
 
+HUMAN_HEIGHT_M = 1.7
+
+
+def size_plausibility(ratio: float) -> float:
+    """1 up to 1.5x the object's expected image size (occlusion and distance only shrink it), then a
+    log-normal fall-off with sigma ln 2: 3x -> 0.61, 6x -> 0.14, 10x -> 0.02."""
+    if ratio <= 1.5:
+        return 1.0
+    return float(np.exp(-np.log(ratio / 1.5) ** 2 / (2 * np.log(2) ** 2)))
+
+
+def implausible_object_frames(seq: dict, shape: tuple[int, int], expected_px: float, actor_centres: dict,
+                              actor_height: float) -> list[int]:
+    """Frames where the kept object's track sits on something else: more than 3x the object's expected
+    image size AND more than one actor height from the actor (the strip along the left image border
+    in episodes 2 and 16). Dropped frames are refilled by the tracker like any missed frame."""
+    bad = []
+    for f, (bits, _) in seq.items():
+        ys, xs = np.nonzero(unpack(bits, shape))
+        anchor = actor_centres.get(f)
+        if not len(ys) or anchor is None:
+            continue
+        far = np.linalg.norm(np.array([xs.mean(), ys.mean()]) - anchor) / actor_height > 1.0
+        if far and max(np.ptp(ys), np.ptp(xs)) / expected_px > 3.0:
+            bad.append(int(f))
+    return sorted(bad)
+
+
 def implausible_frames(seq: dict, shape: tuple[int, int], window: int = 3) -> list[int]:
     """Frames where the tracked actor's mask collapses AND jumps -- a stray blob, not a person.
 
@@ -157,6 +185,8 @@ def main() -> int:
     parser.add_argument("--dtype", default="bfloat16", choices=("bfloat16", "float16", "float32"),
                         help="float32 on V100s, which have no bfloat16")
     parser.add_argument("--state_on_cpu", action="store_true", help="keep SAM3's per-frame memory in host RAM (16 GB V100s)")
+    parser.add_argument("--object_mesh", type=Path, default=None,
+                        help="released object mesh: its size, relative to the actor, picks the right instance")
     args = parser.parse_args()
 
     frames = read_frames(args.video_path)
@@ -182,17 +212,45 @@ def main() -> int:
     objects = track(model, processor, frames, object_text, args.device, dtype, state_device)
     if not objects:
         raise SystemExit(f"SAM3 found no {object_text!r}")
-    near = {}
+    # Expected image size of the object, from its released mesh and the actor's height in pixels.
+    # Without it a large wrong region won on area alone: a strip along the image border in
+    # episodes 3, 4, 9, 17, 20, 27 (1-2.8x the actor's size, ~1 actor height away).
+    expected_px = None
+    if args.object_mesh is not None:
+        import trimesh
+
+        extent_m = float(np.max(trimesh.load(str(args.object_mesh), force="mesh").bounding_box.extents))
+        expected_px = extent_m / HUMAN_HEIGHT_M * actor_height
+    near, fit = {}, {}
     for oid, seq in objects.items():
-        total = 0.0
+        total, ratios, distances = 0.0, [], []
         for f, (bits, score) in seq.items():
             mask = unpack(bits, shape)
             centre, anchor = centroid(mask), actor_centres.get(f)
             if centre is None or anchor is None:
                 continue
-            total += mask.sum() * score * np.exp(-np.linalg.norm(centre - anchor) / actor_height)
+            distance = np.linalg.norm(centre - anchor) / actor_height
+            area, plausible = mask.sum(), 1.0
+            if expected_px is not None:
+                ys, xs = np.nonzero(mask)
+                ratio = max(np.ptp(ys), np.ptp(xs)) / expected_px
+                plausible = size_plausibility(ratio)
+                area = min(area, expected_px ** 2)  # no reward for being bigger than the object
+                ratios.append(ratio)
+            distances.append(distance)
+            total += area * score * np.exp(-distance) * plausible
         near[oid] = total
+        fit[oid] = {"size_ratio_median": round(float(np.median(ratios)), 2) if ratios else None,
+                    "actor_distance_median": round(float(np.median(distances)), 2) if distances else None}
     object_id = max(near, key=near.get)
+    chosen = fit[object_id]
+    if chosen["size_ratio_median"] is not None and chosen["size_ratio_median"] > 3.0 and chosen["actor_distance_median"] > 1.0:
+        raise SystemExit(f"best {object_text!r} instance is implausible ({chosen}); refusing to hand CARI4D a wrong object")
+    object_glitches = []
+    if expected_px is not None:
+        object_glitches = implausible_object_frames(objects[object_id], shape, expected_px, actor_centres, actor_height)
+        for f in object_glitches:
+            del objects[object_id][f]
 
     del model
     torch.cuda.empty_cache()
@@ -221,8 +279,11 @@ def main() -> int:
         "actor_id": actor_id,
         "actor_frames": len(actor),
         "actor_glitch_frames_dropped": glitches,
+        "object_glitch_frames_dropped": object_glitches,
         "object_text": object_text,
         "object_instances_near_score": {str(k): round(v, 1) for k, v in near.items()},
+        "object_instances_fit": {str(k): v for k, v in fit.items()},
+        "object_expected_px": None if expected_px is None else round(float(expected_px), 1),
         "object_id": object_id,
         "detected_frames": detected,
         "tracker_seed_frame": seeds,

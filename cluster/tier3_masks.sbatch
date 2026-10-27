@@ -26,10 +26,10 @@ mkdir -p "$O/inputs" "$M" "$O/tmp/$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 failed=0
 for EP in ${EPS:-$(seq 0 29)}; do
-  read -r SEQ OBJ < <(python3 - "$T1/meta/episodes_metadata.jsonl" "$EP" <<'PY'
+  read -r SEQ OBJ MESH < <(python3 - "$T1/meta/episodes_metadata.jsonl" "$EP" <<'PY'
 import json, sys
 r = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["episode_index"] == int(sys.argv[2])][0]
-print(r["sequence_id"], r["object"])
+print(r["sequence_id"], r["object"], r["mesh"])
 PY
 )
   [ -f "$M/$SEQ/selection.json" ] && { echo "== ep$EP: masks exist"; continue; }
@@ -39,6 +39,7 @@ PY
   apptainer exec --nv --cleanenv -B "$R" -B "$O/tmp/$SLURM_JOB_ID":/tmp --env HOME=/tmp \
     --env HF_HOME="$W/hf_home" --env HF_HUB_OFFLINE=1 "$SIF" \
     python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "${PROMPT:-$OBJ}" \
-      --masks_dir "$M/$SEQ" --sam3_path "$W/sam3" --dtype float32 --state_on_cpu < /dev/null || failed=1
+      --masks_dir "$M/$SEQ" --sam3_path "$W/sam3" --object_mesh "$R/data/v2d_challenge/track_2/tier_2_synthetic_noise/$MESH" \
+      --dtype float32 --state_on_cpu < /dev/null || failed=1
 done
 exit $failed
