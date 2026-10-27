@@ -641,6 +641,18 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   a 5-frame release. Parameters fixed from physics before scoring; no Tier 1 code path. Episodes
   0, 28, 29 are never held, so `t2c_ep{00,28,29}_keypoints` are symlinks to the identical-input t2 runs.
 - **Tighter keypoints** (`ARM=keypoints_tight`, scale 0.03) on Tier 1 eps 2, 9, 11, 17, 19, 26, 27.
+- **Tier 3 batch 1 (2026-10-27): 15 of 20 references validate.** Eps 6 and 9: SAM3 handed frame 4 of the
+  actor track to a 2.4k-px blob elsewhere (vs 34k px on the actor), so CARI4D put the human 2.5 m away
+  for one frame; `sam3_text_masks.py` now drops such frames (area < 25% of median AND centroid jump >
+  half the actor's height) and lets the tracker refill them -- a scan of every mask set flags only
+  those two frames. Eps 20, 27, 28: the frame-0 alignment rotation is wrong (pelvis 113 deg / 33 deg /
+  60 deg from upright, object up to 1.9 m under the floor), i.e. CARI4D's frame-0 object orientation is
+  off for these objects. Pelvis tilt alone is NOT a failure signal: real Tier 2 humans bend to 55 deg.
+- CARI4D's CoCoNet crop raises "mesh geometry projects entirely outside the image" when a "valid"
+  object pose lands off-screen (ep 2, basket); `tier3_cari4d_episode.sbatch` patches that crop to treat
+  such a pose as invalid (upstream's own path), alongside the fp_centroid_distance patch.
+- `make_tier3_manifest.py` admits only episodes whose cluster-side `run_tier_pipeline.py validate`
+  record has zero failed checks; validate on the cluster after every rsync from the PC.
 - `cluster/diagnose_jitter.sbatch` measures per-policy joint shake (mean step-to-step joint change
   of the simulated robot, unassisted world-1 rollout). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42,
   keypoints 0.74-1.07. **The smooth arm cuts it on every paired episode**: ep02 0.74 -> 0.60, ep04

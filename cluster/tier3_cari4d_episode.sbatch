@@ -81,8 +81,33 @@ if text.count(old) != 1 or "import numpy as np" not in text:
     sys.exit("FoundationPose export patch does not apply cleanly; refusing to run a guessed fix")
 open(path, "w").write(text.replace(old, new))
 PY
-c4d() {  # same as above, plus the patched export
-  apptainer exec --nv --cleanenv -B "$R" -B "$O/tmp/$SLURM_JOB_ID":/tmp -B "$PATCHED:$FP_EXPORT:ro" \
+# Second one-line fix, same mechanism: CoCoNet's geometry-guided crop rasterizes the tracked object
+# for every frame whose FoundationPose pose is "valid", and raises when that pose projects entirely
+# outside the image (blue easter basket, episode 2). Such a pose gives no crop support, so it is
+# treated exactly like an invalid one -- upstream's own object_pose_valid=False path (person mask
+# only). The flag is local to the crop; nothing downstream reads it.
+CROP=/workspace/v2d_cari4d/lib/cari4d/prep/mhr_geometry_crop.py
+CROP_PATCHED=$O/tmp/$SLURM_JOB_ID/mhr_geometry_crop.py
+apptainer exec --cleanenv "$SIF" cat "$CROP" > "$CROP_PATCHED"
+OLD='    object_visible_silhouette = None
+    if bool(object_pose_valid):'
+NEW='    object_visible_silhouette = None
+    if bool(object_pose_valid) and object_vertices_camera is not None and object_faces is not None:
+        try:
+            rasterize_mesh_silhouette(object_vertices_camera, object_faces, K, image_shape)
+        except ValueError:
+            object_pose_valid = False  # v2d: an off-image object pose gives no crop support
+    if bool(object_pose_valid):'
+python3 - "$CROP_PATCHED" "$OLD" "$NEW" <<'PY'
+import sys
+path, old, new = sys.argv[1:]
+text = open(path).read()
+if text.count(old) != 1:
+    sys.exit("geometry-crop patch does not apply cleanly; refusing to run a guessed fix")
+open(path, "w").write(text.replace(old, new))
+PY
+c4d() {  # same as above, plus the two patched files
+  apptainer exec --nv --cleanenv -B "$R" -B "$O/tmp/$SLURM_JOB_ID":/tmp -B "$PATCHED:$FP_EXPORT:ro" -B "$CROP_PATCHED:$CROP:ro" \
     --env HOME=/tmp --env HF_HOME="$W/hf_home" --env HF_HUB_OFFLINE=1 \
     "$SIF" "$@"
 }
