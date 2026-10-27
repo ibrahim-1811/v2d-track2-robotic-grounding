@@ -47,3 +47,6 @@ __pycache__/
 # Scratch and debug outputs
 tmp/
 docs.zip
+
+# Local tool binaries (git-lfs for official/)
+/.local/

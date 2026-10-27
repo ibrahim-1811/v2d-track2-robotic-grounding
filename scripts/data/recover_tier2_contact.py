@@ -1,6 +1,6 @@
 """Tier 2 object recovery from Tier 2 data and physics only: an object moves only when touched.
 
-Replaces ``recover_tier2_object.py`` for submissions. That script's static hold and 3 cm/s
+Replaces ``recover_tier2_object.py`` (removed 2026-10-27, in git history) for submissions. That script's static hold and 3 cm/s
 threshold were chosen by scoring against the clean Tier 1 caption (its ``--evaluate``), which we
 no longer allow for any Tier 2 decision (CLAUDE.md, "Rule discipline for Tiers 2 and 3"). This one
 has no Tier 1 code path at all, and its two parameters are fixed from physics before anything is

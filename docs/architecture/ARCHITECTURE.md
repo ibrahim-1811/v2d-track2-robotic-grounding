@@ -1,241 +1,215 @@
 # How this project works
 
-Plain-English explanation of what we built, why it is shaped this way, and how
-data moves through it. If you only read one doc, read this one.
+Plain-English explanation of what we built, why it is shaped this way, and how data moves
+through it. Commands live in the [README](../../README.md); measured results and traps live in
+[CLAUDE.md](../../CLAUDE.md); what each file does is in [CODE_MAP.md](CODE_MAP.md).
 
 ---
 
 ## 1. The problem, in one paragraph
 
-NVIDIA filmed people doing everyday manipulation tasks — tipping up a bar stool,
-sweeping with a squeegee, opening a rice cooker. They turned each video into a
-**reference trajectory**: where the object was, frame by frame, and how the
-person moved. Our job is to make a simulated Unitree G1 humanoid robot reproduce
-**the object's motion**, with no help, and submit what the object actually did.
-We are scored on how closely our object trajectory matches the real one.
+NVIDIA filmed people doing everyday manipulation: tipping up a bar stool, sweeping with a
+squeegee, turning a rice cooker. Each of the 30 episodes is a **reference trajectory**, giving where
+the object was and how the person moved, frame by frame. A simulated Unitree G1 humanoid with Dex3
+hands has to reproduce **the object's motion**, on its own, and we submit what the object
+actually did. **We are scored on the object, not the robot.**
 
-The key thing to understand: **we are not scored on the robot.** We are scored
-on the object. The robot is just the means.
+Scoring is four metrics per tier: AUC (fraction of frames with object points within 1-9 cm,
+dominated by orientation), SP-SR and MP-SR (success rates), and MPPE (keypoint error in cm). The
+final rank is the lowest **sum of per-metric ranks**. The three tiers count equally, and a team
+missing a tier is unranked.
 
-## 2. The four stages
+| Tier | What we get | What it tests |
+|---|---|---|
+| 1 | the clean multi-view caption | control |
+| 2 | the same, with a corrupted object track (random walk up to 30 deg / 3 cm) | robustness to bad input |
+| 3 | nothing: we reconstruct each episode from its monocular exo video | the whole video-to-robot chain |
 
-Everything we have built fits into four stages. Data flows left to right, and
-each stage has its own validation gate so a problem is caught where it happens
-rather than three stages later.
+## 2. The pipeline
+
+Every tier ends in the same retarget, train, evaluate, pack chain. The tiers differ only in
+how the input is produced.
 
 ```mermaid
 flowchart LR
-    subgraph INPUT["INPUT (never edited)"]
-        HF["Hugging Face mirror<br/>30 episodes x 2 tiers<br/>object poses + human motion"]
+    subgraph IN["INPUT"]
+        T1["Tier 1 caption<br/>(HF mirror)"]
+        T2["Tier 2 corrupted<br/>(HF mirror)"]
+        V["exo videos"]
     end
-
-    subgraph A["STAGE A — adapt"]
-        A1["lerobot_to_soma.py<br/>rewrite NVIDIA's format<br/>into SOMA's layout"]
+    subgraph PREP["make a challenge-format episode"]
+        R2["recover_tier2_contact.py<br/>hold the object unless<br/>a hand or foot is near"]
+        M["sam3_text_masks.py<br/>person + object masks"]
+        C["CARI4D<br/>4D human + object"]
+        X["cari4d_to_lerobot.py<br/>align with Tier 1 frame 0,<br/>SOMA body fit"]
     end
-
-    subgraph B["STAGE B — retarget"]
-        B1["retarget_episode_g1.py<br/>human body -> G1 robot joints<br/>(runs NVIDIA's solver)"]
+    subgraph PC["Ibrahim's PC"]
+        RT["run_tier_pipeline.py<br/>stage, retarget (soma_to_g1),<br/>validate"]
     end
-
-    subgraph C["STAGE C — validate"]
-        C1["validate_reference.py<br/>is this reference<br/>physically trackable?"]
+    subgraph CL["cluster (A100s)"]
+        VA["validate again,<br/>build the manifest"]
+        TR["FlashSAC training<br/>1 policy per episode"]
+        EV["5 unassisted<br/>evaluations"]
+        PK["best run per episode,<br/>kit packer, CSV"]
     end
-
-    subgraph D["STAGE D — train & score"]
-        D1["train a policy<br/>(FlashSAC RL)"]
-        D2["evaluate unassisted<br/>(NVIDIA's evaluator)"]
-        D3["pack a submission CSV"]
-    end
-
-    HF --> A1 --> B1 --> C1 --> D1 --> D2 --> D3
-    style INPUT fill:#eef
-    style D fill:#efe
+    T1 --> RT
+    T2 --> R2 --> RT
+    V --> M --> C --> X --> RT
+    RT --> VA --> TR --> EV --> PK
+    style IN fill:#eef
+    style CL fill:#efe
 ```
 
-**Stage A — adapt.** The challenge ships data in NVIDIA's "LeRobot" format.
-Their retargeting tool wants a different layout called SOMA. Stage A is a pure
-format translation. It copies object poses through *byte for byte* — we never
-reinterpolate or clean anything, because inventing a measurement would silently
-corrupt everything downstream.
+**Retarget.** A human body is not a G1 body. NVIDIA's `soma_to_g1.py` solves the robot joint
+angles per frame. We only wrap it: `retarget_episode_g1.py` chunks the body-model evaluation,
+because the original runs out of memory on 8 GB. It runs in `robotic-grounding:latest`, which
+exists only on Ibrahim's PC, so every reference is built there and rsynced to the cluster.
 
-**Stage B — retarget.** A human has a different body from a G1 robot. This
-stage solves, for every frame, the robot joint angles that best reproduce the
-human pose. We do not write the solver — NVIDIA's `soma_to_g1.py` does it. We
-only wrote a wrapper, because the original loads the whole sequence into GPU
-memory at once and runs out of memory on 8 GB. Ours feeds it in chunks.
+**Validate.** Before any GPU time, 45 checks: joint speeds inside the URDF limits, retarget
+residual comparable to NVIDIA's own demo, no teleports, the robot grounded, hands reaching the
+object. They run on the PC and again on the cluster, on the exact files training will read.
 
-**Stage C — validate.** Before spending hours of GPU time, check the reference
-is actually usable: are the joint velocities within the robot's real limits? Is
-the solver's residual error comparable to NVIDIA's own demo? Did any frame blow
-up? All 30 Tier 1 episodes pass.
+**Train.** One FlashSAC policy per episode with NVIDIA's `g1_recon_body_flash_sac` recipe:
+350M environment steps at 2,048 worlds, about 3 h on an A100. Our changes are reward terms and
+hyper-parameters (section 5), never upstream code.
 
-**Stage D — train and score.** Reinforcement learning produces a policy; the
-official evaluator runs it unassisted and records what the object did; the
-packer turns that into a submission.
+**Evaluate and pack.** NVIDIA's unchanged evaluator runs each policy unassisted, in one world,
+five times. The best run per episode (by mean AUC) goes to the kit's packer, which converts the
+object trajectory into the released world frame and prints the same scores Kaggle reports.
 
-## 3. The one rule that matters most
+## 3. The rule that matters most: training helps, evaluation does not
 
 ```mermaid
 flowchart TD
-    T["TRAINING<br/>voc_scale = 1.0 at first<br/>An invisible controller pushes the object<br/>toward its target and cancels gravity"]
-    E["EVALUATION<br/>voc_scale = 0.0, force limits 0<br/>The robot is entirely on its own"]
-    T -. "the curriculum removes<br/>this help over 350M steps" .-> E
+    T["TRAINING<br/>voc_scale = 1.0 at first<br/>a virtual controller pushes the object<br/>toward its target and cancels gravity"]
+    E["EVALUATION<br/>voc_scale = 0.0, force limits 0<br/>the robot is entirely on its own"]
+    T -. "the curriculum withdraws this help<br/>over 210M of the 350M steps" .-> E
     style T fill:#fee
     style E fill:#efe
 ```
 
-During early training the simulator **helps**: a virtual controller (VOC) grabs
-the object and pushes it toward where it should be. That is intentional — it
-lets the robot learn the motion before it has to do the hard part. The
-curriculum then withdraws that help in nine stages.
+Early training gets an invisible helper on the object. Evaluation gets none. A replay that looks
+perfect in training can be worthless, and training's own tracking errors overstate quality
+because episodes terminate at 10 cm. Only the unassisted evaluation counts.
 
-**Evaluation gives no help at all.** So a replay that looks perfect during
-training can be worthless. This is the single easiest way to fool yourself on
-this project, and we have a rule: *never present an assisted replay as policy
-success.*
+## 4. The control stack: who moves the robot
 
-## 4. How we extend NVIDIA's code without touching it
+```mermaid
+flowchart LR
+    REF["G1 reference<br/>(retargeted human)"] --> SONIC["GEAR-SONIC<br/>pretrained whole-body<br/>controller (NVIDIA, pinned)"]
+    POL["our policy<br/>(FlashSAC actor)"] -->|"residual x 0.15<br/>body joints"| SUM(("+"))
+    SONIC --> SUM --> PD["joint PD targets"]
+    POL -->|"residual x 0.15<br/>Dex3 fingers"| FPD["finger PD targets<br/>= reference + residual"]
+    PD --> SIM["MuJoCo/Warp physics"]
+    FPD --> SIM
+```
 
-`official/` is NVIDIA's code at a pinned commit. We never edit it — partly
-because the organisers inspect our commit, and partly because an edit there is
-invisible in our diffs and impossible to review.
+- The **walking and balance** come from GEAR-SONIC, NVIDIA's pretrained controller. Pretrained
+  controllers are allowed (FAQ), and whole-body control is required.
+- Our policy adds a **residual** on top. This residual is what makes the pelvis and torso
+  shake: the smooth arm penalises it, and the gentle arm halves it.
+- The **fingers have no prior**: `soma_to_g1` leaves them open, and the human data barely moves
+  them. The scripted-grip references close them during contact so the policy does not have to
+  discover grasping alone.
+- The **big strides** come from the fixed playback rate: one 30 fps dataset frame per 50 Hz
+  control step, 1.67x real time, the same for every team because the packer needs one row per
+  frame.
 
-So how did we add a 13th reward term? By **wrapping**, not patching:
+## 5. How we extend NVIDIA's code without touching it
+
+`official/` is NVIDIA's code at commit `193382a`, and we never edit it. New reward terms are
+added by **wrapping**:
 
 ```mermaid
 flowchart TB
-    subgraph OURS["our code"]
-        W["OrientationReconBodyObjective<br/>(pipeline/flash_sac_orientation.py)"]
-        K["Warp GPU kernel<br/>copies the 12 terms through unchanged,<br/>computes a 13th, recomposes the score"]
+    subgraph OURS["our code (pipeline/)"]
+        W["KeypointReconBodyObjective<br/>(flash_sac_keypoints.py)"]
+        K["Warp kernel: copies the 12 terms,<br/>appends object_keypoints<br/>(+ object_velocity in the velocity arm)"]
     end
     subgraph NV["NVIDIA upstream (read-only)"]
         O["ReconBodyObjective<br/>12 reward terms"]
-        L["FlashSAC learner<br/>+ replay buffer"]
+        L["FlashSAC learner<br/>+ replay"]
     end
-    W -- "asks it to do its normal job" --> O
-    O -- "returns 12 terms" --> K
-    K -- "hands back 13 terms" --> L
+    W -- "delegates" --> O
+    O -- "12 raw terms" --> K
+    K -- "13-14 raw terms" --> L
     style NV fill:#eef
     style OURS fill:#efe
 ```
 
-The trick that makes this possible: everything downstream in FlashSAC sizes
-itself from `len(objective.term_names)`. Nothing is hard-coded to 12. So a 13th
-term flows into the replay buffer and the learning updates with **no upstream
-change at all**.
+- FlashSAC sizes everything from `len(objective.term_names)`, so extra terms need no upstream
+  change. Terms are stored **raw** and re-weighted at sample time, so a term must be a real
+  column, not a patch to the scalar reward.
+- NVIDIA's evaluator rebuilds the experiment from config baked into the checkpoint, and that
+  config names our module. `flash_sac_actor_export.py` writes a **portable** copy with the stock
+  config and byte-identical weights, and the evaluator runs that copy.
+- Upstream bugs in CARI4D are handled the same way: the sbatch patches a *copy* of the one file
+  and bind-mounts it read-only over the image's version.
 
-Two things were subtle enough to be worth remembering:
+The objective arms (all selectable with `ARM=`):
 
-- The reward must be stored **raw** (unweighted). FlashSAC re-derives the reward
-  from stored raw terms every time it samples. If we had only changed the final
-  scalar, the learner would have ignored it entirely.
-- NVIDIA's evaluator rebuilds the whole experiment from config baked into the
-  checkpoint file. A checkpoint trained with our objective names *our* Python
-  module, which the evaluator cannot import. So we export a second copy of the
-  policy whose config is rewritten back to the stock 12-term version, with
-  identical weights. Same brain, different label on the box.
-
-## 5. What actually runs where
-
-Three execution environments, and mixing them up wastes a lot of time:
-
-```mermaid
-flowchart LR
-    subgraph HOST["HOST — your laptop"]
-        H1[".venvs/episode0<br/>analysis, plots, scoring,<br/>reading checkpoint headers"]
-        H2[".venvs/kit<br/>the submission packer<br/>(needs numpy 2, isolated)"]
-    end
-    subgraph RG["robotic-grounding:latest — 31 GB"]
-        R1["SOMA body model + Isaac Sim<br/>ONLY used for Stage B retargeting"]
-    end
-    subgraph FC["flash_chord:latest — 21 GB"]
-        F1["Warp + JAX + MuJoCo<br/>training, evaluation, the viewer"]
-    end
-    HOST -. "docker run" .-> RG
-    HOST -. "docker run" .-> FC
-```
-
-Rough guide: **if it touches the GPU physics, it is in a container.** If it
-reads a file and prints numbers, it runs on the host.
-
-## 6. Why the 8 GB laptop changed the design
-
-NVIDIA's recipe asks for ~48 GB of GPU memory. We have 8. Almost every unusual
-decision in this repo traces back to that:
-
-| Their setting | Ours | Why |
+| Arm | Adds | Why |
 |---|---|---|
-| 2,048 parallel worlds | 1,024 | memory |
-| 10,000,000-transition replay buffer | 500,000 | the buffer alone would be 21 GB |
-| 4 learning updates per batch | 2 | matches the smaller world count |
+| `keypoints` (default) | six object keypoints, 5 cm Laplacian, weight 5 | the stock `object_position` term is flat inside the 10 cm termination window and has no orientation; AUC is mostly orientation |
+| `keypoints_smooth` | 100x action-rate and action penalties | 19-69% less joint shake, equal or better AUC |
+| `keypoints_gentle` | smooth + body residual 0.075 | lets SONIC's own gait dominate (pilot) |
+| `keypoints_closegrip` | scripted Dex3 grip in the reference | the dropping episodes |
+| `keypoints_vel`, `*_slowvoc` | object velocity term / slower assist fade | tried for the fast episodes; no gain |
 
-That replay buffer cut is **20x**, and it is almost certainly why our fully
-trained Episode 0 policy still scores below "do nothing". FlashSAC is an
-off-policy algorithm; its replay buffer is not a detail, it is the algorithm.
+## 6. Tier 2: recovering the object without Tier 1
 
-**This is the single most important open question in the project**, and it is
-why the cluster matters. See [TOP3_STRATEGY.md](../plans/TOP3_STRATEGY.md).
+Tier 2's noise keeps walking while the real object sits still; the human motion is nearly
+clean. `recover_tier2_contact.py` therefore holds the object's pose whenever no palm or foot is
+within its bounding radius + 0.10 m (feet from URDF forward kinematics), with a 5-frame release.
+Both parameters were fixed from physics before anything was scored, and **no Tier 1 data
+appears anywhere in the code path**. An earlier method was tuned against Tier 1, so its entry is
+not a final selection.
 
-## 7. How a training run actually flows
-
-```mermaid
-sequenceDiagram
-    participant You
-    participant L as train_orientation_flash_sac.py
-    participant D as Docker (flash_chord)
-    participant N as NVIDIA's trainer
-    participant Disk
-
-    You->>L: --tag my_run
-    L->>L: preflight: disk space? budget divisible<br/>by world count? output dir free?
-    L->>D: docker run, mounting our configs + code
-    D->>N: upstream main(), our objective injected by config
-    N->>N: ~40 s compiling GPU kernels
-    loop every 1,024 environment steps
-        N->>N: collect experience, update the networks
-    end
-    N->>Disk: policy_<step>.safetensors (4.6 MB, the brain)
-    N->>Disk: state_<step>.safetensors (152 MB, resumable)
-    N->>Disk: metrics.jsonl (losses, all 13 reward terms)
-    N-->>You: live progress + losses on your terminal
-```
-
-The launcher exists because the raw Docker command is 30 lines and easy to get
-wrong — and because a mistyped mount once silently produced a run with no code
-in it.
-
-## 8. How scoring works, and the trap in it
+## 7. Tier 3: building our own input
 
 ```mermaid
 flowchart TD
-    P["trained policy"] --> E["official evaluator<br/>1 world, no help,<br/>all 778 frames recorded"]
-    E --> T["trajectory parquet<br/>what the object actually did"]
-    T --> S["score it"]
-    S --> AUC["AUC — the ranking metric"]
-    S --> MPPE["MPPE"]
-    T --> F{"compare against<br/>DOING NOTHING"}
-    F -->|"better"| G["real progress"]
-    F -->|"worse"| B["a regression — do not ship it"]
-    style B fill:#fee
-    style G fill:#efe
+    V["exo video"] --> S["SAM3 text masks<br/>person + object"]
+    S --> G{"plausibility<br/>size vs mesh, one-frame glitches,<br/>strip along the image border"}
+    G --> C["CARI4D: MoGe2 depth, SAM 3D Body,<br/>FoundationPose, CoCoNet, refinement"]
+    C --> A{"frame-0 alignment<br/>object vs Tier 1 frame 0;<br/>human disagrees by > 20 deg?"}
+    A -->|"no"| O["scene placed by the object"]
+    A -->|"yes: symmetric object"| H["scene placed by the human,<br/>object orientation relabelled"]
+    O --> F["SOMA body fit (MHR identity)<br/>challenge-format episode"]
+    H --> F
+    F --> RT["retarget on the PC, validate on the cluster"]
 ```
 
-**The trap:** a frozen object is not a score of zero. On Episode 0 it scores
-0.3769 AUC. Across the tier it scores 0.266 — which beats our actual submitted
-entry on 26 of 30 episodes. So every result must be quoted against that floor,
-not against zero and not against a previous bad policy.
+What each guard exists for:
+- **Masks:** SAM3 picked a strip along the left image border instead of small objects in 9
+  episodes, and once handed the person track to a stray blob for one frame.
+- **Alignment:** for symmetric objects (mug, bowl, round table, rice cooker, basket, squeegee,
+  platform, sign), CARI4D can resolve a frame-0 orientation that looks identical but differs from
+  the label. Trusting it turned whole scenes by 53-178 deg, including two that passed all 45
+  validation checks.
+- **The FAQ allows Tier 1's first frame for alignment only**, so both the object and the human
+  at frame 0 may be used, and nothing after it.
 
-**Why AUC is harsh:** it measures the fraction of frames where object points are
-within 1–9 cm of the truth. On an object half a metre across, **ten degrees of
-rotation already pushes you past 9 cm.** AUC is dominated by orientation — and
-NVIDIA's stock reward has no object-orientation term at all. That mismatch is
-the most defensible place to beat the baseline, and it is what our 13th term
-exists for.
+## 8. Choosing what to submit
 
-## 9. Where to go next
+```mermaid
+flowchart TD
+    R["every evaluated run of an episode<br/>(all arms and seeds)"] --> M["mean AUC over 5 repeats"]
+    M --> B["best per episode<br/>(MPPE breaks ties)"]
+    B --> P["rep 1 of the winner,<br/>fixed in advance"]
+    P --> K["kit packer: frame conversion +<br/>the four scores Kaggle will show"]
+```
 
-- **Want to run something?** [docs/guides/ONBOARDING.md](../guides/ONBOARDING.md)
-- **Want to know what a file does?** [CODE_MAP.md](CODE_MAP.md)
-- **Want the environment traps?** [CLAUDE.md](../../CLAUDE.md) — every line was
-  learned by something breaking
-- **Want the competitive plan?** [TOP3_STRATEGY.md](../plans/TOP3_STRATEGY.md)
+Quote every result against its episode's **stationary floor**, the score of a frozen object,
+which is far from zero (tier mean AUC 0.266). Choosing between whole submissions by their packed
+or Kaggle score is ordinary leaderboard use. Tuning anything for Tier 2 or 3 against Tier 1 is
+not.
+
+## 9. What runs where
+
+| Where | What | Environment |
+|---|---|---|
+| cluster login node | launchers, status, packing, small analysis | Python 3.9, `apptainer exec containers/flash_chord.sif` for pyarrow/numpy/pytest |
+| cluster A100 jobs | training, evaluation, viewer, media, CARI4D, conversion | `flash_chord.sif` (Warp, JAX, MuJoCo), `cari4d.sif` (CARI4D, SOMA-X) |
+| cluster V100 jobs | SAM3 masks only | `cari4d.sif` |
+| Ibrahim's PC | retargeting, local viewer, git push, Kaggle upload | Docker `robotic-grounding:latest`, `flash_chord:latest`; `.venvs/episode0` |

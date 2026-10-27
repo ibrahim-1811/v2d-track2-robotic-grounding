@@ -270,7 +270,7 @@ policy success.
   43, critic_context 10, objective terms 12 -> **2,246 B/transition** at
   float16. The shipped `capacity: 10000000` is therefore **20.92 GiB — 2.6x the
   whole card**. Workable ceiling is **1,000,000** (2.09 GiB). Use
-  `scripts/train/probe_flash_sac_memory.py` to recompute for any episode.
+  `probe_flash_sac_memory.py` (removed 2026-10-27, in git history) to recompute for any episode.
 - **Measured world-count ceiling (replay 500k): 1024 worlds, 6,826 MiB.** 2048
   OOMs in `wp_cuda_graph_create_exec` — the same CUDA-graph failure as PPO, so
   host RAM cannot buy it back. 256 -> 1024 worlds costs only 2,580 MiB, which is
@@ -319,7 +319,7 @@ policy success.
 
 ## FlashSAC weight-only transfer (Step D, Stage 2)
 
-- **`scripts/train/transfer_flash_sac_policy.py` is the only honest way to warm-start
+- **`transfer_flash_sac_policy.py` (removed 2026-10-27, in git history) was the only honest way to warm-start
   one episode from another.** It builds the TARGET's fresh learner, splices in
   only the source actor's `params`/`batch_stats`, proves by leaf-by-leaf array
   comparison that nothing else moved (31 leaves changed, 157 identical), and
@@ -415,7 +415,7 @@ bash scripts/verify/verify_keypoint_flash_sac.sh    # cluster: exit 0 = arm-3 ke
 - **Curriculum and objective configs are generated**, not hand-written:
   `scripts/train/make_orientation_curriculum.py` reads upstream's YAML and refuses to
   run if the twelve weights, nine thresholds or stage settings moved. Re-running
-  it must be a no-op; `verify_orientation_flash_sac.sh` checks that.
+  it must be a no-op; `verify_keypoint_flash_sac.sh` checks that.
 - **At 1024 worlds the 350M budget is exact**: 349,999,104 / 1024 = 341,796
   collections, × 2.0 updates = **683,592 optimizer updates**, which is the
   full-recipe LR horizon, so no LR override is needed and every curriculum
@@ -437,7 +437,7 @@ bash scripts/verify/verify_keypoint_flash_sac.sh    # cluster: exit 0 = arm-3 ke
   the metric only ever sees the part of the episode before failure. Never quote
   a training tracking error as a result; export the trajectory.
 - **Scores, 5 fresh unassisted world-1 repeats each**
-  (`scripts/evaluate/evaluate_orientation_sweep.sh`):
+  (the laptop's `evaluate_orientation_sweep.sh`, removed 2026-10-27):
   | checkpoint | AUC | MPPE cm |
   |---|---|---|
   | previous 10M | 0.1190 +/- 0.0062 | 93.89 |
@@ -480,7 +480,7 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   the **three tiers count equally** (site). A team missing any metric is **unranked**
   (upstream #209). Tier 1 alone cannot win Track 2.
 - **Never ship a frozen-object trajectory**, even where it beats the policy: the FAQ
-  requires trajectories *from learned policies*. `TOP3_STRATEGY.md` §3a is withdrawn.
+  requires trajectories *from learned policies*.
 - **Live standings need no Kaggle login**:
   `https://raw.githubusercontent.com/MVerghese/v2d-leaderboard-data/main/leaderboard.json`
   (the site's `data-src`). `official/.../leaderboard.json` at `193382a` is an empty stub.
@@ -534,7 +534,7 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   what AUC and MP-SR (30 deg) punish.
 - **Static hold is the only recovery that helped**: hold the pose while the (smoothed)
   object speed is below 3 cm/s, follow the measurement while it moves
-  (`scripts/data/recover_tier2_object.py`). Input AUC vs clean **0.422 -> 0.480**, 27/30
+  (`recover_tier2_object.py`, removed 2026-10-27). Input AUC vs clean **0.422 -> 0.480**, 27/30
   episodes better (worse: rice cooker, which turns in place). Carrying the orientation with
   the nearest palm (`follow_palm`) was **much worse** (21 -> 75 deg): pushes, drags and
   flips do not turn the object with the hand. Palm-spin motion detection lowered the mean.

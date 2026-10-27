@@ -10,12 +10,14 @@
 # which validates every frame against the clean reference and prints the four local scores.
 # Upload is a separate, deliberate step (submit/v2d_submit.py needs Kaggle credentials).
 #
-# Tier 2 trained on the recovered trajectory (scripts/data/recover_tier2_object.py) packs with its
+# Tier 2 trained on the rules-clean recovered trajectory (scripts/data/recover_tier2_contact.py) packs with its
 # own run prefix and the matching frame references:
-#   PREFIX=t2r FRAME_REFS=outputs/tier2r_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2
+#   PREFIX=t2c FRAME_REFS=outputs/tier2c_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2
+# Tier 3 packs against our own reconstruction (a tier dataset root):
+#   PREFIX=t3 FRAME_REFS=data/reconstructed/track_2/tier_3_cari4d_ours COMMIT_URL=... bash cluster/pack_tier.sh 3
 set -euo pipefail
 R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
-TIER=${1:?usage: COMMIT_URL=... bash cluster/pack_tier.sh <1|2>}
+TIER=${1:?usage: COMMIT_URL=... bash cluster/pack_tier.sh <1|2|3>}
 COMMIT_URL=${COMMIT_URL:?set COMMIT_URL to the GitHub /commit/<sha> that trained these policies}
 PREFIX=${PREFIX:-t$TIER}
 FRAME_REFS=${FRAME_REFS:-}

@@ -11,7 +11,7 @@
 #SBATCH --output=/work/mnidgu2s/project/v2d-track2-robotic-grounding/logs/eval_%x_%j.out
 
 # Repeated, unassisted, world-1 evaluation of one checkpoint with NVIDIA's unchanged
-# evaluate_policy.py -- the cluster equivalent of scripts/evaluate/evaluate_step_d.sh,
+# evaluate_policy.py -- the cluster equivalent of the laptop's former evaluate_step_d.sh,
 # run REPEATS times as fresh processes (single rollouts are not repeatable, see
 # docs/guides/ONBOARDING.md §5). world_count=1 because the packer scores world 0 only.
 #

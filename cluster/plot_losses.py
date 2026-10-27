@@ -22,7 +22,6 @@ OUT = R / "outputs/cluster/plots/loss_comparison.png"
 
 # (label, metrics file); colours follow the fixed categorical order, never cycled.
 RUNS = [
-    ("Ep 0, 8 GB laptop (1024 worlds, 13 terms)", R / "reference_policy/metrics.jsonl"),
     ("Ep 0, cluster A100 (NVIDIA recipe)", R / "outputs/cluster/ep0_stock_nvidia_recipe/metrics.jsonl"),
     ("Ep 7 retrain, seed 43 (running)", R / "outputs/cluster/t1_ep07_seed43/metrics.jsonl"),
     ("Ep 27 (running)", R / "outputs/cluster/t1_ep27_stock/metrics.jsonl"),

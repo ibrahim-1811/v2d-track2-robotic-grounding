@@ -32,4 +32,4 @@ docker run --rm --gpus all \
     pipeline/tests/container_flash_sac_orientation_replay.py -q -p no:cacheprovider
 ```
 
-`bash scripts/verify/verify_orientation_flash_sac.sh` runs both suites.
+`bash scripts/verify/verify_keypoint_flash_sac.sh` and `verify_velocity_flash_sac.sh` run both suites.

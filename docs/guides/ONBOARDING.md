@@ -1,5 +1,9 @@
 # Onboarding: NVIDIA V2D Challenge 2026, Track 2
 
+> **Status 2026-10-27:** this guide describes the original 8 GB laptop workflow. Work now runs on
+> the cluster; the [README](../../README.md) has every current command, and some scripts named
+> below (orientation sweeps, transfer, `TOP3_STRATEGY.md`) were removed and live in git history.
+
 Read this first, then [CLAUDE.md](../../CLAUDE.md) for the hard-won environment
 facts. Every line of CLAUDE.md was learned by something breaking; it will save
 you hours.

@@ -8,8 +8,11 @@
 #
 #   bash scripts/diagnose/view_policy_viser.sh <container-policy-path> [port]
 #
-# e.g. the 10M Episode 0 source policy:
-#   bash scripts/diagnose/view_policy_viser.sh /out/source_ep0_w1024/policy_10000384.safetensors
+# /out is OUT (default outputs/cluster, the cluster's run tree; rsync a run's policy file into
+# it). Every data/adapter_out* tree is mounted at /work/<name>, as on the cluster, so Tier 1,
+# 2 and 3 policies all resolve their references. e.g. a cluster run copied to this PC:
+#   bash scripts/diagnose/view_policy_viser.sh /out/t1_ep24_keypoints/portable_policy_349999104.safetensors
+#   OUT=outputs/step_D bash scripts/diagnose/view_policy_viser.sh /out/source_ep0_w1024/policy_10000384.safetensors
 #
 # Then open   http://localhost:8080   in a browser.
 #
@@ -41,7 +44,12 @@ PORT=${2:-8080}
 
 FC_ROOT=$REPO/official/video_to_data/robotic_grounding/flash_chord
 FC_ASSETS=$REPO/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
-mkdir -p "$REPO/outputs/step_D/warp_cache"
+OUT=$(cd "$REPO" && realpath -m "${OUT:-outputs/cluster}")
+mkdir -p "$OUT" "$REPO/outputs/warp_cache"
+DATA_MOUNTS=()
+for tree in "$REPO"/data/adapter_out*; do
+  [ -d "$tree" ] && DATA_MOUNTS+=(-v "$tree:/work/$(basename "$tree"):ro")
+done
 
 echo "=== Viser policy viewer ==="
 echo "  checkpoint : $CKPT"
@@ -53,9 +61,9 @@ exec docker run --rm -it --gpus all --name v2d-viser \
   -p "${PORT}:8080" \
   -v "$FC_ROOT:/workspace" \
   -v "$FC_ASSETS:/v2d/assets:ro" \
-  -v "$REPO/data/adapter_out:/work/adapter_out:ro" \
-  -v "$REPO/outputs/step_D:/out" \
-  -v "$REPO/outputs/step_D/warp_cache:/root/.cache/warp" \
+  "${DATA_MOUNTS[@]}" \
+  -v "$OUT:/out" \
+  -v "$REPO/outputs/warp_cache:/root/.cache/warp" \
   -v "$REPO/pipeline:/v2d/repo/pipeline:ro" \
   -e PYTHONPATH=/v2d/repo \
   -e XLA_PYTHON_CLIENT_PREALLOCATE=false \

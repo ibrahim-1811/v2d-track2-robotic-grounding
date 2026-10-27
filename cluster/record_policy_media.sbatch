@@ -30,7 +30,7 @@ SIF=$R/containers/flash_chord.sif
 FC=$R/official/video_to_data/robotic_grounding/flash_chord
 ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
 OUT=$R/outputs/cluster
-SELECTION=${SELECTION:-outputs/submission/tier1/selection.json}
+SELECTION=${SELECTION:-outputs/submission/t1/selection.json}
 FORMATS=${FORMATS:-mp4 viser}
 if [ -n "${RUNS:-}" ]; then SET=${SET:-runs}; else SET=${SET:-$(basename "$(dirname "$SELECTION")")}; fi
 MEDIA=$R/outputs/media

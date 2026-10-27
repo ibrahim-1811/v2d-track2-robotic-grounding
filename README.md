@@ -1,296 +1,316 @@
-# V2D Challenge Track 2: Robotic Grounding
+# V2D Challenge 2026, Track 2: Robotic Grounding (team Izus_Systems)
 
-Our entry for **Track 2 (Robotic Grounding)** of the
-[NVIDIA Video-to-Data Challenge 2026](https://nvidia-isaac.github.io/video_to_data/v2d_challenge/).
+A simulated Unitree G1 humanoid (with Dex3 hands) has to reproduce each challenge episode's
+**object** motion, unassisted, starting from a human video reconstruction. We train one
+FlashSAC policy per episode, per tier, on top of NVIDIA's pinned GEAR-SONIC whole-body
+controller, export what the object actually did, and pack it into a Kaggle CSV.
 
-Track 1 (our WHAM + FoundationPose 4D reconstruction baseline) lives in a separate
-repository: [`Swithinraj/v2d-track1-wham-foundationpose`](https://github.com/Swithinraj/v2d-track1-wham-foundationpose).
-This repository is independent of it — no shared history, no shared working tree.
+- **Ranking:** lowest sum of per-metric ranks (AUC, SP-SR, MP-SR, MPPE). The three tiers count
+  equally; a team missing a tier is unranked.
+- **Freeze:** 4 November 2026, 17:00 EST. Each tier allows 5 uploads per week (unlimited in the
+  final 3 days) and 2 final selections.
 
-- **Leaderboard freeze:** 4 November 2026, 5:00 p.m. EST
+| Tier | Input | Our pipeline |
+|---|---|---|
+| 1 | NVIDIA's clean multi-view caption | retarget, then train |
+| 2 | the same data with a corrupted object track | Tier-2-only contact-gated recovery, then train |
+| 3 | nothing released: our own reconstruction from the exo video | SAM3 masks, CARI4D reconstruction, conversion, retarget, then train |
 
-**Status (2026-10-22).** All 30 Tier 1 references are built and validated. One
-episode has a fully trained policy: Episode 0 at 350M steps, scoring
-**AUC 0.3491** against a **0.3769** "do nothing" floor — real progress over our
-earlier 0.1190, but still short of inaction. Our submitted tier entry is
-0.17521; NVIDIA's own CHORD baseline is 0.51038.
-
-The open question is that we have never run NVIDIA's actual recipe: 8 GB of
-laptop VRAM forced the replay buffer down **20x**. Testing that on a bigger GPU
-is the next step — see [docs/plans/TOP3_STRATEGY.md](docs/plans/TOP3_STRATEGY.md).
+**Read next:** [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) (how it
+works) · [docs/architecture/CODE_MAP.md](docs/architecture/CODE_MAP.md) (what every file does) ·
+[CLAUDE.md](CLAUDE.md) (environment traps and measured results: read before running anything).
 
 ---
 
-## Documentation
+## Contents
 
-| Start here | |
-|---|---|
-| [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | what this project is and how it works, with diagrams |
-| [CLAUDE.md](CLAUDE.md) | environment traps — read before running anything |
-| [docs/guides/ONBOARDING.md](docs/guides/ONBOARDING.md) | set up from scratch, and what to work on |
-| [docs/architecture/CODE_MAP.md](docs/architecture/CODE_MAP.md) | what every file does |
-| [docs/README.md](docs/README.md) | the full documentation index |
+1. [Rules of the repo](#1-rules-of-the-repo)
+2. [Layout](#2-layout)
+3. [Machines and one-time setup](#3-machines-and-one-time-setup)
+4. [Daily status](#4-daily-status)
+5. [Training](#5-training)
+6. [Evaluation](#6-evaluation)
+7. [Tier 2: rules-clean object recovery](#7-tier-2-rules-clean-object-recovery)
+8. [Tier 3: reconstruction pipeline](#8-tier-3-reconstruction-pipeline)
+9. [Retargeting on Ibrahim's PC](#9-retargeting-on-ibrahims-pc)
+10. [Watching episodes](#10-watching-episodes)
+11. [Packing and submitting](#11-packing-and-submitting)
+12. [Tests and health checks](#12-tests-and-health-checks)
 
-## Repository layout
+---
+
+## 1. Rules of the repo
+
+- **Branch `submission_trials`.** Commits and pushes are Ibrahim's only. The cluster commits
+  with `git ci` (ibrahim-1811), and Ibrahim pushes from his PC (section 11).
+- **Never edit** `official/` (NVIDIA upstream, pinned at `193382a`) or `data/v2d_challenge/` (the
+  pristine Hugging Face mirror). We extend upstream by wrapping it, never by patching it.
+- **No Tier 1 caption in any Tier 2 or Tier 3 decision**, not as input, threshold, method choice
+  or go/no-go report. Tier 3 may use Tier 1's **first frame** for alignment only (FAQ).
+- **Never ship a frozen-object trajectory**: the FAQ requires trajectories from learned policies.
+- **Every policy is judged unassisted** (`voc_scale = 0`, world 1, as the packer scores). Never
+  present an object-assisted replay as success.
+
+## 2. Layout
 
 ```
-pipeline/   our Python package (the logic) and its tests
-scripts/    things you run: data/ train/ evaluate/ diagnose/ verify/
-configs/    generated Hydra overrides for our reward variants
-docs/       architecture/ guides/ reference/ findings/ plans/
-official/   NVIDIA's code, pinned and READ-ONLY   (gitignored)
-data/       challenge inputs and staged references (gitignored)
-outputs/    runs, checkpoints, reports             (gitignored)
+pipeline/            Python package: adapters, reward objectives, validators (+ tests/)
+scripts/
+  data/              download, stage, retarget, validate; Tier 2 recovery
+  train/             manifests, curricula, grip references, metrics
+  evaluate/          submission assembly, stationary floor, AUC decomposition
+  diagnose/          rollout diagnostics, media recording, viewers
+  tier3/             SAM3 masks -> CARI4D -> challenge-format episodes
+  verify/            one-command health checks
+cluster/             Slurm jobs and launchers (training, evaluation, Tier 3, media, packing)
+configs/             generated Hydra overrides for our objectives and curricula
+docker/              the pyarrow fix for robotic-grounding:latest (PC only)
+docs/                architecture/ guides/ reference/ findings/
+training_manifest_*.json   per-tier episode facts the trainer reads (support flag, floor, paths)
+
+official/  data/  outputs/  containers/  logs/  .venvs/      gitignored (large or machine-specific)
 ```
 
-## Health check
+| Manifest | Tier | Reference tree |
+|---|---|---|
+| `training_manifest_verified.json` | Tier 1 | `data/adapter_out` |
+| `training_manifest_t1grip.json` | Tier 1, scripted grip | `data/adapter_out_grip` |
+| `training_manifest_tier2.json` | Tier 2, raw input | `data/adapter_out_tier_2` |
+| `training_manifest_tier2c.json` | Tier 2, contact-gated recovery | `data/adapter_out_tier_2c` |
+| `training_manifest_tier3.json` | Tier 3, validated episodes only | `data/adapter_out_tier_3_cari4d_ours` |
+
+## 3. Machines and one-time setup
+
+| Machine | Used for | Has |
+|---|---|---|
+| **Cluster** `wr0.wr.inf.h-brs.de`, repo at `/work/mnidgu2s/project/v2d-track2-robotic-grounding` | training, evaluation, Tier 3 reconstruction, packing; the main workspace | `containers/flash_chord.sif`, `containers/cari4d.sif`, 24 A100s (`wr20-25`) |
+| **Ibrahim's PC** `~/v2d-track2-robotic-grounding` | retargeting (the only place `robotic-grounding:latest` exists), pushing, Kaggle uploads | Docker, 8 GB GPU, `~/v2d_submission_kit` |
+
+**Cluster, from scratch** (already done; kept for reference):
+```bash
+git clone -b submission_trials https://github.com/ibrahim-1811/v2d-track2-robotic-grounding.git
+cd v2d-track2-robotic-grounding
+mkdir -p official && cd official && git clone https://github.com/nvidia-isaac/video_to_data.git \
+  && cd video_to_data && git checkout 193382a && git lfs pull && cd ../..
+apptainer build containers/flash_chord.sif cluster/flash_chord.def     # training/evaluation image
+apptainer build containers/cari4d.sif cluster/cari4d.def               # Tier 3 reconstruction image
+python3 scripts/data/download_challenge_episodes.py                     # Tier 1 + 2 mirror -> data/v2d_challenge
+```
+V100 nodes (`wr14-19`) cannot run the SONIC controller or CARI4D's Warp build; every A100 job
+already excludes them. Only SAM3 masks run there.
+
+**Ibrahim's PC, from scratch:**
+```bash
+git clone -b submission_trials git@github.com:ibrahim-1811/v2d-track2-robotic-grounding.git
+cd v2d-track2-robotic-grounding
+docker build -f docker/Dockerfile.pyarrow-fix -t robotic-grounding:latest .   # on top of upstream's image
+python3 -m venv --system-site-packages .venvs/episode0 && .venvs/episode0/bin/pip install pyarrow==15.0.2
+```
+
+## 4. Daily status
 
 ```bash
-.venvs/episode0/bin/python -m pytest pipeline/tests/ -q   # 142 tests, ~1 s
-bash scripts/verify/verify_orientation_flash_sac.sh       # full check
+cd /work/mnidgu2s/project/v2d-track2-robotic-grounding
+bash cluster/train_status.sh 't1_ep*' 't2c_ep*' 't3_ep*'    # progress % and evaluations per run
+bash cluster/status.sh                                       # queue + rate/ETA of running jobs
+squeue -u $USER -o '%.10i %.28j %.8T %.10M %R'               # raw queue
+scontrol show res                                            # maintenance windows
+```
+Live standings without a Kaggle login:
+`https://raw.githubusercontent.com/MVerghese/v2d-leaderboard-data/main/leaderboard.json`.
+
+## 5. Training
+
+One FlashSAC policy per episode: NVIDIA's `g1_recon_body_flash_sac` recipe, 349,999,104
+environment steps at 2,048 worlds (about 3 h on an A100). `ARM` picks the objective:
+
+| `ARM` | What changes | Status |
+|---|---|---|
+| `stock` | NVIDIA's 12-term objective | baseline |
+| `keypoints` | + `object_keypoints` (six points, 5 cm Laplacian, weight 5): what AUC measures | **default** |
+| `keypoints_smooth` | + 100x action-rate and action penalties | less shaking, equal or better AUC |
+| `keypoints_gentle` | smooth + half the body residual (`action.residual_scale=0.075`) | pilot (eps 8, 18, 23) |
+| `keypoints_closegrip` | keypoints on references with a scripted Dex3 grip | helped squeegee and bat |
+| `keypoints_vel`, `keypoints_slowvoc`, `keypoints_vel_slowvoc` | + object velocity term / slower assist fade (507.5M steps) | no gain on the dropping episodes |
+| `keypoints_tight` | keypoint scale 3 cm | worse on every episode tried |
+
+```bash
+# A whole tier, spread over LANES chains, each training followed by its 5-repeat evaluation:
+ARM=keypoints LANES=6 EVAL=1 EPISODES="$(seq 0 29)" bash cluster/submit_tier_lanes.sh                      # Tier 1
+PREFIX=t2c MANIFEST=training_manifest_tier2c.json ARM=keypoints LANES=6 EVAL=1 EPISODES="1 2 3" bash cluster/submit_tier_lanes.sh
+PREFIX=t3  MANIFEST=training_manifest_tier3.json  ARM=keypoints LANES=6 EVAL=1 EPISODES="0 1 5" bash cluster/submit_tier_lanes.sh
+# Variants: ARM=keypoints_smooth, SEED=43 (run gets a _s43 suffix), NICE=100 (queue behind other work), DRY=1 (print only)
+MANIFEST=training_manifest_t1grip.json ARM=keypoints_closegrip LANES=4 EVAL=1 EPISODES="1 4 25 28" bash cluster/submit_tier_lanes.sh
+
+# One episode by hand:
+EP=8 ARM=keypoints sbatch --job-name=v2d-t1-ep08 cluster/train_tier_episode.sbatch
+```
+Runs land in `outputs/cluster/<prefix>_epNN_<arm>[_sSEED]/`: `policy_<step>.safetensors`
+(actor, 4.6 MB), `metrics.jsonl`, and `eval_<step>/rep1..5.json` plus the exported trajectories.
+A run whose final policy exists is skipped on re-queue. Training metrics overstate quality
+(episodes terminate at 10 cm); only the unassisted evaluation counts.
+
+**If a run dies with NaN** (episode 7's 1 cm support slab), `train_flash_sac.sbatch` stops at the
+first NaN line. Resume from the last state before it (see CLAUDE.md):
+`EXTRA="training.resume=true training.checkpoint_path=/out/<run>/state_<step>.safetensors"`.
+
+```bash
+.venvs/episode0/bin/python scripts/train/show_training_metrics.py outputs/cluster/t1_ep24_keypoints --terms
+python3 scripts/train/monitor_training_disk.py outputs/cluster/t1_ep24_keypoints  # dry run; --apply prunes old state_*
 ```
 
-## 1. What Track 2 asks for
+## 6. Evaluation
 
-> "Third-Person-View 4D HOI → Policy. How much reconstruction error can be tolerated?"
+Five fresh unassisted world-1 rollouts with NVIDIA's unchanged `evaluate_policy.py`, scored
+against the episode's own stationary floor. `EVAL=1` above queues these automatically.
 
-Where Track 1 reconstructs human–object interaction *from* monocular video, Track 2
-takes reconstructed hand–object motion and **grounds it on a robot in simulation**:
-turning human demonstrations into robot-executable policies, and measuring how much
-upstream reconstruction error that transfer can absorb.
+```bash
+RUN=t1_ep24_keypoints STEP=349999104 REPEATS=5 EPISODE=24 FLOOR=0.6 sbatch cluster/evaluate_policy.sbatch
+EPISODES="1 2 3" bash cluster/submit_tier_evals.sh                                # many at once
+python3 scripts/evaluate/assemble_submission.py --prefix t1 -o /tmp/sel/results  # best run per episode (dry run)
+apptainer exec -B $PWD:/r --pwd /r containers/flash_chord.sif python scripts/evaluate/decompose_auc_loss.py --root /r --run-fmt t1_ep%02d_keypoints --episodes 2,9   # position vs rotation loss
+RUNS="t1_ep02_keypoints t1_ep02_keypoints_smooth" sbatch cluster/diagnose_jitter.sbatch    # joint-shake measurement
+```
+Selection rule: the highest **mean** AUC over the 5 repeats per episode, MPPE as the tie-break.
+Rep 1 of the winner is what gets submitted (fixed in advance, not cherry-picked).
 
-Two things are **fixed and provided** by the organisers, so entries compete on
-retargeting and policy learning rather than simulation engineering:
+## 7. Tier 2: rules-clean object recovery
 
-| Fixed | Value |
-|---|---|
-| Embodiment | **Unitree G1 + Dex3** hands |
-| Simulator | Isaac Lab (`nvcr.io/nvidia/isaac-lab:2.3.2`) |
+Tier 2's object noise is a random walk (up to 30 deg / 3 cm) that keeps moving while the real
+object is still. The recovery holds the object unless a palm or foot (URDF forward kinematics)
+is within its bounding radius + 0.10 m, with a 5-frame release. Both parameters come from physics
+and Tier 2's own noise limit. There is no Tier 1 code path.
 
-### The three tiers
-
-Track 2 is split into three tiers by the quality of the input reference trajectory.
-**A valid submission is a separate submission to each tier**, and teams may change
-approach between them. All three are evaluated against the *clean* multi-view
-captured object trajectory, and each tier is weighted equally in the final score.
-
-| Tier | Input reference trajectory |
-|---|---|
-| **1** | Clean multi-view capture — an upper bound for upstream reconstruction |
-| **2** | Synthetic corruption — jitter, dropout and contact errors sampled from Track 1's error distributions |
-| **3** | Off-the-shelf reconstructions — today's best practice; CARI4D is provided as the off-the-shelf solution |
-
-For Tiers 2 and 3 the organisers encourage methods that **recover better object
-trajectory estimates** using anything except the clean Tier 1 captions.
-
-### Metrics
-
-Object-tracking accuracy by **AUC**, **SP-SR**, **MP-SR** and **MPPE**, as defined
-in the CHORD manuscript.
-
-### Submission mechanics
-
-- Scored through **Kaggle**; each metric has its own leaderboard.
-- Submissions are produced by the official `eval_robotic_grounding.py` script — you
-  submit *recorded evaluations* of trained policies.
-- Up to **five submissions per week**, unlimited in the final three days.
-- Submissions must **include a GitHub commit**, and the code repository must be
-  **shared with [`Nvidia-V2D-Challenge`](https://github.com/Nvidia-V2D-Challenge)**.
-- Award eligibility also needs an agreed **code release under a research license**
-  and a short technical report.
-
----
-
-## 2. The official pipeline
-
-The official workflow is a chain of containerised stages over a dataset:
-
-```text
-raw dataset + MANO models
-          │
-          ▼  stage: load          (image: v2d_task_library_loader)
-   <ds>_loaded  —  per-frame MANO joints + object poses (Parquet)
-          │
-          ▼  stages: segment → urdf → processed → support → vis
-          │          (image: robotic-grounding, on Isaac Lab 2.3.2)
-          ▼
-   <ds>_processed          retargeted robot motion
-   object_assets/urdfs/    object URDFs
-   reconstructed_stage/    support surfaces (.usda)
-   <ds>_html/              viser recording + MP4
+```bash
+apptainer exec -B $PWD --pwd $PWD containers/flash_chord.sif python scripts/data/recover_tier2_contact.py --write
+# -> data/adapter_out_tier_2c, outputs/tier2c_frame_references/, training_manifest_tier2c.json
 ```
 
-| Stage | What it produces |
-|---|---|
-| `load` | MANO forward kinematics over the raw dataset → per-frame hand joints and object poses |
-| `segment` | Sequence segmentation (hot3d only) |
-| `urdf` | Object URDFs from the dataset meshes |
-| `processed` | **IK retargeting** of human hands onto the robot |
-| `support` | Reconstructed support surfaces as USD stages |
-| `vis` | viser recording and MP4 for review |
+## 8. Tier 3: reconstruction pipeline
 
-Two further tracks of work sit alongside that chain:
+Per episode, on the cluster:
 
-- **FlashCHORD** — GPU-parallel reference tracking with Newton, Warp, JAX, PPO and
-  FlashSAC, in its own container. Needs a 48 GiB GPU (see §5).
-- **GR00T post-training** — deliberately split out, because it needs Python 3.10
-  against the pipeline's 3.11.
-
-You drive the chain from the host with `scripts/run_pipeline_docker.py`; it selects
-the right image per stage, so you never shell into a container.
-
-### Official sources we track
-
-| What | Where |
-|---|---|
-| Challenge, tiers, submission rules | [v2d_challenge](https://nvidia-isaac.github.io/video_to_data/v2d_challenge/) |
-| Track 2 code and prerequisites | [`robotic_grounding`](https://github.com/nvidia-isaac/video_to_data/tree/main/robotic_grounding) |
-| Full setup walkthrough | [`docs/SETUP.md`](https://github.com/nvidia-isaac/video_to_data/blob/main/robotic_grounding/docs/SETUP.md) |
-| Architecture map | [`docs/ARCHITECTURE.md`](https://github.com/nvidia-isaac/video_to_data/blob/main/robotic_grounding/docs/ARCHITECTURE.md) |
-| Pinned container base | [`workflow/Dockerfile`](https://github.com/nvidia-isaac/video_to_data/blob/main/robotic_grounding/workflow/Dockerfile) → `nvcr.io/nvidia/isaac-lab:2.3.2` |
-| FlashCHORD | [`flash_chord/README.md`](https://github.com/nvidia-isaac/video_to_data/blob/main/robotic_grounding/flash_chord/README.md) |
-
-Everything in our docs is quoted from these sources with the date it was read.
-We do not record version numbers we have not verified against them.
-
----
-
-## 3. How this repository is organised
-
-```text
-.
-├── README.md              this file — objective, layout, setup status
-└── docs/
-    ├── SETUP_AUDIT.md     measured machine specs, raw command output, detected issues
-    └── REQUIREMENTS.md    official requirements vs. our machine, classified
+```bash
+EPS="7" PROMPT="clothes iron" sbatch --mem=150G cluster/tier3_masks.sbatch   # SAM3 masks on a V100 (optional: the A100 job does it too)
+EP=7 sbatch cluster/tier3_cari4d_episode.sbatch                              # masks if missing, then CARI4D (~1-1.5 h)
+EPS="4 11 15" sbatch cluster/tier3_convert.sbatch                            # CARI4D -> data/reconstructed/track_2/tier_3_cari4d_ours
 ```
 
-Planned, added as each step lands:
+What each step guards against (details in CLAUDE.md):
+- **Masks** (`scripts/tier3/sam3_text_masks.py`) pick the object instance whose image size
+  matches its released mesh, drop one-frame actor and object glitches (a stray blob, or the strip
+  along the left image border), and refuse an implausible pick.
+- **CARI4D** runs with two one-line patches, bind-mounted copies applied by the sbatch: undefined
+  centroid distances are written as NaN, and off-image object poses are treated as invalid crops.
+- **Conversion** (`scripts/tier3/cari4d_to_lerobot.py`) aligns to the released world with Tier 1's
+  frame-0 object pose. If that disagrees with Tier 1's frame-0 human by more than 20 deg (a symmetric
+  object), the human places the scene and the object's orientation is relabelled to frame 0.
 
-```text
-├── config/                our pinned settings, tier and dataset choices
-├── pipeline/
-│   ├── setup/             one-time setup (Docker, images, assets)
-│   └── stages/            per-stage entry points
-└── scripts/               analysis, validation and review helpers
+Then retarget on Ibrahim's PC (section 9), rsync back, and on the cluster:
+
+```bash
+apptainer exec -B $PWD --pwd $PWD containers/flash_chord.sif python scripts/data/run_tier_pipeline.py validate --tier tier_3_cari4d_ours --episodes 11,12,14 --force
+apptainer exec -B $PWD --pwd $PWD containers/flash_chord.sif python scripts/tier3/make_tier3_manifest.py      # [--accept-failed 11] coverage only
+PREFIX=t3 MANIFEST=training_manifest_tier3.json ARM=keypoints LANES=3 EVAL=1 EPISODES="12 14 15" bash cluster/submit_tier_lanes.sh
 ```
+The manifest admits an episode only when validation passed on the cluster, the frame-0
+alignment check passed, and the reference is newer than its conversion.
 
-We mirror the Track 1 repository's conventions deliberately — `config/`, `docs/`,
-`pipeline/`, `scripts/` — so both tracks read the same way.
+## 9. Retargeting on Ibrahim's PC
 
-### Rules for this repository
+```bash
+cd ~/v2d-track2-robotic-grounding
+git pull ssh://mnidgu2s@wr0.wr.inf.h-brs.de/work/mnidgu2s/project/v2d-track2-robotic-grounding submission_trials
+rsync -avz mnidgu2s@wr0.wr.inf.h-brs.de:/work/mnidgu2s/project/v2d-track2-robotic-grounding/data/reconstructed/track_2/tier_3_cari4d_ours data/reconstructed/track_2/
+E=1,5,8-10                                     # episode selector
+.venvs/episode0/bin/python scripts/data/run_tier_pipeline.py stage    --tier tier_3_cari4d_ours --episodes $E --force
+.venvs/episode0/bin/python scripts/data/run_tier_pipeline.py retarget --tier tier_3_cari4d_ours --episodes $E --force
+.venvs/episode0/bin/python scripts/data/run_tier_pipeline.py validate --tier tier_3_cari4d_ours --episodes $E --force
+rsync -avz data/adapter_out_tier_3_cari4d_ours mnidgu2s@wr0.wr.inf.h-brs.de:/work/mnidgu2s/project/v2d-track2-robotic-grounding/data/
+```
+`--force` is needed whenever an episode was retargeted before: the pipeline otherwise reuses
+the old reference even if its input changed. About 1.5 minutes per episode. Tiers 1 and 2 use
+the same commands with `--tier tier_1_multiview_caption` / `tier_2_synthetic_noise`.
 
-- **The official repo is a dependency, not a fork.** We clone
-  `nvidia-isaac/video_to_data` separately (gitignored as `official/`) and keep our
-  own code here. We do not vendor it.
-- **No large or licensed files.** [`.gitignore`](.gitignore) excludes `data/`,
-  `weights/`, `outputs/`, `containers/`, `third_party/` and `official/`. MANO and
-  other license-gated assets are never committed.
-- **This repository is public.** Nothing secret goes in — no tokens, no NGC or
-  Kaggle credentials, no license-gated model weights.
-- **Versions get verified, not guessed.** Quote the official source and the date.
+## 10. Watching episodes
 
----
+Three ways. All show the **unassisted** policy, the same rollout the evaluator scores.
 
-## 4. Setup status
+### a) Recorded videos and 3D replays: any PC, no GPU
 
-Step 1 is an audit. **Nothing has been installed, downloaded, built or launched.**
+```bash
+# cluster: record a selection (mp4 + .viser 3D replay per episode) into outputs/media/<set>/
+sbatch cluster/record_policy_media.sbatch                                         # the current Tier 1 selection
+SELECTION=outputs/submission/t2c/selection.json sbatch cluster/record_policy_media.sbatch
+RUNS="t1_ep08_keypoints_gentle t1_ep08_keypoints_smooth" SET=gentle sbatch cluster/record_policy_media.sbatch
+python3 scripts/diagnose/make_media_index.py                                      # rebuild outputs/media/index.html
 
-| Area | Status |
-|---|---|
-| Machine audited | Done — [docs/reference/SETUP_AUDIT.md](docs/reference/SETUP_AUDIT.md) |
-| Requirements compared against official docs | Done — [docs/reference/REQUIREMENTS.md](docs/reference/REQUIREMENTS.md) |
-| Docker installed | **No — blocker** |
-| NVIDIA Container Toolkit | Yes, 1.20.1, verified against the GPU |
-| NVIDIA driver / CUDA | Yes, 580.178.04 / 13.0 — exceeds the recommended 580.126.09 |
-| NGC credentials | No |
-| Kaggle account / API token | No |
-| Official repo cloned | No |
-| Container images built | No |
-| MANO models staged | No |
-| Datasets downloaded | No |
+# your PC: copy and open
+rsync -avz --progress mnidgu2s@wr0.wr.inf.h-brs.de:/work/mnidgu2s/project/v2d-track2-robotic-grounding/outputs/media/ ~/v2d_media/
+cd ~/v2d_media && python3 -m http.server 8000                                     # then open http://localhost:8000
+```
+Each row links the MP4 and the interactive 3D replay (orbit, zoom, timeline). `t1` = the
+submitted Tier 1 policies, `t2r` = the submitted (grey) Tier 2 policies.
 
-Of 46 catalogued requirements: **19 PASS, 18 MISSING, 2 INCOMPATIBLE, 7 NOT TESTED**.
+### b) Live viewer on a cluster GPU, opened from any PC
 
-The host is in good shape underneath — recent driver, working container toolkit,
-the NVIDIA Docker runtime already registered in `/etc/docker/daemon.json`, the user
-already in the `docker` group, Git LFS present, and both Python 3.11 and 3.10
-available. Nothing on the system conflicts with Track 2.
+```bash
+# cluster: start the viewer for an episode's selected policy (or any run)
+bash cluster/view_episode.sh 24
+RUN=t1_ep08_keypoints_gentle bash cluster/view_episode.sh
+# it prints the node, e.g. wr22. On your PC:
+ssh -N -L 8080:wr22:8080 mnidgu2s@wr0.wr.inf.h-brs.de                             # keep this open
+# then open http://localhost:8080 (blank until "Starting viser server"). Stop: scancel the v2d-viser job.
+```
+In VS Code Remote-SSH you can instead forward `wr22:8080` in the PORTS tab.
 
-### Development machine at a glance
+### c) Live viewer on Ibrahim's PC (local GPU)
 
-| | |
-|---|---|
-| OS | Ubuntu 24.04.5 LTS, kernel 7.0.0-38-generic |
-| CPU | Intel i7-13650HX — 14 cores / 20 threads |
-| RAM | 31 GiB (~20 GiB available) + 8 GiB swap |
-| GPU | NVIDIA RTX 5070 Laptop — **8151 MiB VRAM**, sm_120 |
-| Driver / CUDA | 580.178.04 / 13.0 |
-| Disk | 122 GB free of 270 GB on `/` |
-| Local Isaac | Isaac Sim 5.1.0, Isaac Lab v2.3.0 (reference only — the pipeline uses the 2.3.2 container) |
+```bash
+cd ~/v2d-track2-robotic-grounding
+RUN=t1_ep24_keypoints
+mkdir -p outputs/cluster/$RUN
+rsync -avz mnidgu2s@wr0.wr.inf.h-brs.de:/work/mnidgu2s/project/v2d-track2-robotic-grounding/outputs/cluster/$RUN/portable_policy_349999104.safetensors outputs/cluster/$RUN/
+bash scripts/diagnose/view_policy_viser.sh /out/$RUN/portable_policy_349999104.safetensors       # http://localhost:8080
+```
+The script mounts every local `data/adapter_out*` tree. A Tier 2 or Tier 3 policy needs its
+tree on the PC: rsync `data/adapter_out_tier_2c` (plus `data/adapter_out_tier_2` for its meshes)
+or `data/adapter_out_tier_3_cari4d_ours`. Use `policy_<step>` when no `portable_` file exists.
 
----
+**A reference without a policy** (no training needed):
+`scripts/diagnose/flashchord_headless_replay.py` replays it headless. Remember that replay is
+object-assisted.
 
-## 5. Known constraints
+## 11. Packing and submitting
 
-**FlashCHORD full training will not run on this machine.** The official requirement
-is "48 GiB GPU with ≥46,000 MiB free"; this GPU has 8151 MiB in total and is also
-driving the desktop. That is roughly a 6× shortfall and no configuration change
-closes it. FlashCHORD needs a 48 GB-class GPU (A6000 Ada, L40S, A100, H100) or a
-cluster allocation.
+```bash
+# cluster: pick the best evaluated run per episode and pack with the kit's unchanged packer
+COMMIT_URL=https://github.com/ibrahim-1811/v2d-track2-robotic-grounding/commit/<sha> bash cluster/pack_tier.sh 1
+PREFIX=t2c FRAME_REFS=outputs/tier2c_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2
+PREFIX=t3 FRAME_REFS=data/reconstructed/track_2/tier_3_cari4d_ours COMMIT_URL=... bash cluster/pack_tier.sh 3
+# -> outputs/submission/<prefix>/track2_tierN.csv; the packer prints the same four scores Kaggle will
+```
+`<sha>` must be a pushed commit that contains the training code. The local scores have matched
+Kaggle exactly on every upload so far, so test locally first.
 
-The **retargeting pipeline itself states no VRAM figure** in the official docs, so
-it is not ruled out — but Isaac Lab rendering plus IK on ~7.3 GiB usable VRAM is
-tight and needs measuring once Docker exists.
+```bash
+# Ibrahim's PC: push the cluster's commits, fetch the CSV, upload
+cd ~/v2d-track2-robotic-grounding
+git pull ssh://mnidgu2s@wr0.wr.inf.h-brs.de/work/mnidgu2s/project/v2d-track2-robotic-grounding submission_trials
+git push origin submission_trials
+mkdir -p ~/v2d_submit && rsync -avz mnidgu2s@wr0.wr.inf.h-brs.de:/work/mnidgu2s/project/v2d-track2-robotic-grounding/outputs/submission/t1/track2_tier1.csv ~/v2d_submit/
+cd ~/v2d_submission_kit && source .venv/bin/activate
+python3 submit/v2d_submit.py ~/v2d_submit/track2_tier1.csv --track track_2_tier1 -m "<what changed>, <sha>" --wait
+```
+Select the two final submissions per tier on Kaggle before the freeze. The t2r entry is not
+to be a final selection (it was tuned against Tier 1).
 
-Also worth knowing:
+## 12. Tests and health checks
 
-- **This is a development machine, not the run machine.** Track 1 required compute
-  capability 8.0+ and ≥24 GB VRAM and ran on different hardware; Track 2's heavier
-  stages probably need to as well. Worth settling where the real compute lives
-  before committing to a tier strategy.
-- **The GPU drives the desktop**, costing ~0.7–1.0 GiB of an already tight budget.
-  Headless would recover it.
-- **The host `nvcc` is CUDA 12.0**, which cannot target sm_120. Harmless for Track 2
-  as specified — the container brings its own toolchain — but nothing CUDA can be
-  built on the host.
-- **Disk is shared and 53% full.** Three container images plus datasets will press
-  on the 122 GB free.
-- **Three weeks to the freeze.** With a separate submission required per tier, the
-  schedule is the binding constraint as much as the hardware.
-
----
-
-## 6. Next steps
-
-Step 2 onward, in dependency order. None of this has been started.
-
-1. **Install Docker Engine** and confirm the daemon starts with the existing
-   `/etc/docker/daemon.json`. Unblocks everything else.
-2. **Verify GPU passthrough** — `docker run --rm --gpus all … nvidia-smi`. The one
-   check Step 1 could not perform.
-3. **Get NGC access** and confirm `docker login nvcr.io` succeeds, so the
-   `nvcr.io/nvidia/isaac-lab:2.3.2` pull works.
-4. **Clone the official repo** and `git lfs pull` the robot URDFs and meshes.
-5. **Run `workflow/setup_deps.sh`** for git-lfs, pipx and pre-commit.
-6. **Create the host orchestrator venv** and install the three `reconstruction/`
-   modules editable.
-7. **Register for MANO** at [mano.is.tue.mpg.de](https://mano.is.tue.mpg.de) and
-   stage the two `.pkl` files in the manotorch layout.
-8. **Build both images**, watching disk headroom.
-9. **Measure VRAM** on the retargeting stages at 8 GiB before committing this
-   machine to the pipeline.
-10. **Set up Kaggle** — account, API token, and accept the competition rules for
-    each of the three tiers.
-11. **Arrange a ≥48 GB GPU** for FlashCHORD.
-12. **Run one sequence end to end** on Tier 1, then plan Tiers 2 and 3.
-
-Steps 1–8 and 10 are setup. Step 11 is a resourcing decision for the team.
-
----
-
-## 7. Licence
-
-Not yet chosen. Award eligibility requires "agreed code release (research
-license)", and this repository is public with no licence file, which currently
-means all rights reserved. To be decided before submission.
+```bash
+apptainer exec -B $PWD --pwd $PWD containers/flash_chord.sif python -m pytest pipeline/tests -q   # host-side tests
+bash scripts/verify/verify_keypoint_flash_sac.sh     # keypoint objective: configs reproducible, kernels match NumPy
+bash scripts/verify/verify_velocity_flash_sac.sh     # velocity objective
+bash scripts/verify/verify_step_C.sh                 # PC: all 30 Tier 1 references valid
+bash scripts/verify/verify_flashchord_smoke.sh       # PC: NVIDIA's G1 example replays
+```

@@ -28,7 +28,7 @@ FC=$R/official/video_to_data/robotic_grounding/flash_chord
 ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
 OUT=$R/outputs/cluster
 STEP=${STEP:-349999104}
-SELECTION=${SELECTION:-outputs/submission/tier1/selection.json}
+SELECTION=${SELECTION:-outputs/submission/t1/selection.json}
 
 if [ -z "${RUN:-}" ]; then
   EP=${EP:?set EP=<episode> (looked up in \$SELECTION) or RUN=<run tag>}
