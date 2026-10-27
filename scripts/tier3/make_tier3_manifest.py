@@ -52,7 +52,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tier", default="tier_3_cari4d_ours")
     parser.add_argument("--out", default=str(REPO / "training_manifest_tier3.json"))
+    parser.add_argument("--accept-failed", default="", help="comma-separated episodes to train DESPITE failed "
+                        "validation checks -- coverage only (Tier 3 needs a policy for all 30); recorded per episode")
     args = parser.parse_args()
+    accepted = {int(e) for e in args.accept_failed.split(",") if e.strip()}
 
     tier_root, out_root = tier_root_for(args.tier), out_root_for_tier(args.tier)
     rows = [json.loads(line) for line in (tier_root / "meta/episodes_metadata.jsonl").read_text().splitlines() if line.strip()]
@@ -67,7 +70,8 @@ def main() -> int:
         # train from) are trainable; a failed reconstruction must not reach the GPUs.
         record = REPO / "outputs" / args.tier / "records" / f"{row['episode_index']:06d}_validate.json"
         verdict = json.loads(record.read_text()) if record.is_file() else {}
-        if verdict.get("checks_failed", 1) != 0 or verdict.get("checks_passed", 0) == 0:
+        failed_checks = verdict.get("failures", []) if verdict.get("checks_failed", 1) != 0 else []
+        if verdict.get("checks_passed", 0) == 0 or (verdict.get("checks_failed", 1) != 0 and row["episode_index"] not in accepted):
             skipped.append(row["episode_index"])
             continue
         # Validation cannot see a scene that is self-consistent but turned (episodes 12, 14: 178 and
@@ -99,6 +103,7 @@ def main() -> int:
             "stationary_auc": stationary_auc(reference, retarget / "object/textured_mesh.obj"),
             "stationary_auc_source": f"{args.tier} input, frame-0 pose frozen (no Tier 1 data)",
             "reference_present": True,
+            **({"validation_failures_accepted": failed_checks} if failed_checks else {}),
         })
     manifest = {"tier": args.tier, "adapter_root": out_root.name,
                 "note": "Tier 3: CARI4D reconstruction aligned with Tier 1's frame-0 object pose only "

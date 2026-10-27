@@ -668,6 +668,13 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   (refilled by the tracker). Both mask sbatches pass the released Tier 2 mesh. Check with an overlay
   before trusting any Tier 3 mask set.
 - The Tier 3 manifest skips a reference older than its conversion (re-aligned 12/14 after batch 1).
+- **The human-placed scene relabels orientation only** (about the object origin) plus one constant world
+  offset to frame 0. A body-frame translation swung with CARI4D's symmetric orientation flips: episode
+  28's 0.43 m lever arm turned raw 0.42 m steps into a 0.65 m teleport. 12/14/15 were converted with the
+  earlier relabel (0.05-0.11 m) and validated; they were not redone.
+- **Episode 11 (book) is trained for coverage only** (`make_tier3_manifest.py --accept-failed 11`): CARI4D
+  loses the hand-hidden book from frame ~209 (75 object steps > 15 cm, up to 1.73 m; human steps up to
+  0.72 m). The accepted failures are recorded in the manifest. Tier 3 needs a policy for all 30.
   Stale conversions live in `data/reconstructed/superseded/` until their rerun lands.
 - `cluster/diagnose_jitter.sbatch` measures per-policy joint shake (mean step-to-step joint change
   of the simulated robot, unassisted world-1 rollout). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42,

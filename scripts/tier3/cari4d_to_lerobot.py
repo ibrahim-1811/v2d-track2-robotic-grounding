@@ -11,7 +11,8 @@ Tier 1 layout. This writes exactly that layout from CARI4D's output, under
           upstream d9d6bf04). Only row 0 of the Tier 1 parquet is ever read for it. When that
           transform disagrees with Tier 1's frame-0 HUMAN by more than 20 deg (a symmetric object
           whose frame-0 orientation CARI4D resolved differently), the human places the scene and
-          the object's body frame is relabelled to match frame 0 (scripts/tier3/frame0_alignment.py).
+          the object's orientation is relabelled and its track offset to match frame 0
+          (scripts/tier3/frame0_alignment.py).
   human   CARI4D's refined MHR parameters (``pr.mhr_*``, identical to the post-opt checkpoint) ->
           vertices through CARI4D's own MHR head -> the same world transform -> SOMA frame ->
           SOMA-X PoseInversion with the MHR identity model, as upstream's
@@ -325,9 +326,8 @@ def main() -> int:
     # For an object with a symmetry, CARI4D may pick a different but equally valid orientation from
     # the labelled one, and the object-only transform then turns the whole scene with it (episodes
     # 3, 6, 9, 12, 14, 20, 27, 28: 53-178 deg; all others 0.5-4.8 deg). Past --max-object-align-deg
-    # the scene is placed by the human instead, and the object's body frame is relabelled by the
-    # rigid S that makes frame 0 equal Tier 1's frame-0 object pose -- for a symmetric object S is
-    # that symmetry, so its geometry does not move.
+    # the scene is placed by the human instead; the object's orientation is relabelled (for a
+    # symmetric object, by that symmetry) and its track offset so frame 0 equals Tier 1's pose.
     # A sibling import: inside cari4d.sif, CARI4D's own ``scripts`` package shadows ours.
     from frame0_alignment import Bodies, correction, tier1_first_frame_human
 
@@ -336,16 +336,24 @@ def main() -> int:
     ours0 = bodies.vertices({"pose": frame0["poses"][0].reshape(-1), "translation": frame0["transl"][0], **identity})
     fix, alignment = correction(ours0, bodies.vertices(tier1_first_frame_human(args.episode)))
     alignment["method"] = "object"
+    world_from_object = world_from_camera[None] @ camera_from_object
     if alignment["rotation_deg"] > args.max_object_align_deg:
         soma_from_camera = fix @ soma_from_camera
         world_from_camera = to_soma @ soma_from_camera  # CV_TO_SOMA is its own inverse
-        relabel = np.linalg.inv(world_from_camera @ camera_from_object[0]) @ tier1_object0
-        camera_from_object = camera_from_object @ relabel
+        # Relabel the ORIENTATION only, about the object's own origin, then move the whole track by
+        # one constant world offset so frame 0 equals Tier 1's frame-0 pose. A body-frame translation
+        # here would swing with every orientation flip in CARI4D's track (episode 28: a 0.43 m lever
+        # arm turned 0.42 m steps into a 0.65 m teleport).
+        relabel = np.eye(4)
+        relabel[:3, :3] = (np.linalg.inv(world_from_camera @ camera_from_object[0]) @ tier1_object0)[:3, :3]
+        world_from_object = world_from_camera[None] @ camera_from_object @ relabel
+        offset = tier1_object0[:3, 3] - world_from_object[0, :3, 3]
+        world_from_object[:, :3, 3] += offset
         alignment.update(method="human", object_relabel_deg=round(float(np.degrees(np.arccos(
             np.clip((np.trace(relabel[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)))), 2),
-            object_relabel_m=round(float(np.linalg.norm(relabel[:3, 3])), 3))
+            object_offset_m=round(float(np.linalg.norm(offset)), 3))
     print(f"episode {args.episode}: alignment {alignment}")
-    object_pose7 = matrices_to_pose7(world_from_camera[None] @ camera_from_object)
+    object_pose7 = matrices_to_pose7(world_from_object)
     vertices_soma = to_frame(soma_from_camera, vertices_cam)
     human = soma_inversion(vertices_soma, identity, args.device)
     human.update(identity)
