@@ -653,6 +653,13 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   such a pose as invalid (upstream's own path), alongside the fp_centroid_distance patch.
 - `make_tier3_manifest.py` admits only episodes whose cluster-side `run_tier_pipeline.py validate`
   record has zero failed checks; validate on the cluster after every rsync from the PC.
+- **Validation cannot catch a turned scene.** `scripts/tier3/frame0_alignment.py` compares our frame-0
+  body with Tier 1's frame-0 body (same SOMA rig and MHR identity; first frame only, as the FAQ allows):
+  14 episodes agree within 0.5-4.8 deg / 8-24 cm, while 3, 6, 9, 12, 14, 20, 27, 28 are off by 53-178 deg --
+  all objects with a symmetry (mug, monitor, bowl, platform, round table, rice cooker, basket, squeegee),
+  whose frame-0 orientation CARI4D resolves differently from the label. 12 and 14 had passed all 45
+  checks. The converter now places the scene by the human when the gap exceeds 20 deg and relabels the
+  object's body frame so frame 0 equals Tier 1's; the manifest also requires a passed alignment check.
 - `cluster/diagnose_jitter.sbatch` measures per-policy joint shake (mean step-to-step joint change
   of the simulated robot, unassisted world-1 rollout). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42,
   keypoints 0.74-1.07. **The smooth arm cuts it on every paired episode**: ep02 0.74 -> 0.60, ep04

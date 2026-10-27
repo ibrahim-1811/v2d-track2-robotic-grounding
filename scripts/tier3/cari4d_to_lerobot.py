@@ -8,7 +8,10 @@ Tier 1 layout. This writes exactly that layout from CARI4D's output, under
   object  ``pr.pose_abs_postopt`` (camera <- CARI4D's aligned mesh) -> the released mesh frame via
           the export's ``source_object_mesh_to_aligned_transform`` -> world via ONE rigid transform
           fixed by Tier 1's frame-0 object pose, the only Tier 1 information Tier 3 may use (FAQ,
-          upstream d9d6bf04). Only row 0 of the Tier 1 parquet is ever read for it.
+          upstream d9d6bf04). Only row 0 of the Tier 1 parquet is ever read for it. When that
+          transform disagrees with Tier 1's frame-0 HUMAN by more than 20 deg (a symmetric object
+          whose frame-0 orientation CARI4D resolved differently), the human places the scene and
+          the object's body frame is relabelled to match frame 0 (scripts/tier3/frame0_alignment.py).
   human   CARI4D's refined MHR parameters (``pr.mhr_*``, identical to the post-opt checkpoint) ->
           vertices through CARI4D's own MHR head -> the same world transform -> SOMA frame ->
           SOMA-X PoseInversion with the MHR identity model, as upstream's
@@ -294,6 +297,8 @@ def main() -> int:
     parser.add_argument("--tier", default=DEFAULT_TIER)
     parser.add_argument("--cari4d-root", default=str(REPO / "outputs/tier3/cari4d"))
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--max-object-align-deg", type=float, default=20.0,
+                        help="frame-0 human disagreement above which the human, not the object, places the scene")
     args = parser.parse_args()
 
     row = episode_row(args.episode)
@@ -307,14 +312,40 @@ def main() -> int:
     refined = torch.load(root / "inference/refined.pth", map_location="cpu", weights_only=False)
 
     camera_from_object = cari4d_object(root, sequence, refined)
-    world_from_camera = pose7_to_matrix(tier1_first_frame_object_pose(args.episode)) @ np.linalg.inv(camera_from_object[0])
-    object_pose7 = matrices_to_pose7(world_from_camera[None] @ camera_from_object)
+    tier1_object0 = pose7_to_matrix(tier1_first_frame_object_pose(args.episode))
+    world_from_camera = tier1_object0 @ np.linalg.inv(camera_from_object[0])
 
     vertices_cam, identity, spread = mhr_vertices(refined, args.device)
     to_soma = np.eye(4)
     to_soma[:3, :3] = CV_TO_SOMA
     soma_from_camera = to_soma @ world_from_camera
-    vertices_soma = vertices_cam @ soma_from_camera[:3, :3].T + soma_from_camera[:3, 3]
+    to_frame = lambda T, v: v @ T[:3, :3].T + T[:3, 3]  # noqa: E731
+
+    # Frame-0 check of the object-only alignment against Tier 1's frame-0 human (first frame only).
+    # For an object with a symmetry, CARI4D may pick a different but equally valid orientation from
+    # the labelled one, and the object-only transform then turns the whole scene with it (episodes
+    # 3, 6, 9, 12, 14, 20, 27, 28: 53-178 deg; all others 0.5-4.8 deg). Past --max-object-align-deg
+    # the scene is placed by the human instead, and the object's body frame is relabelled by the
+    # rigid S that makes frame 0 equal Tier 1's frame-0 object pose -- for a symmetric object S is
+    # that symmetry, so its geometry does not move.
+    from scripts.tier3.frame0_alignment import Bodies, correction, tier1_first_frame_human
+
+    bodies = Bodies(args.device)
+    frame0 = soma_inversion(to_frame(soma_from_camera, vertices_cam[:1]), identity, args.device)
+    ours0 = bodies.vertices({"pose": frame0["poses"][0].reshape(-1), "translation": frame0["transl"][0], **identity})
+    fix, alignment = correction(ours0, bodies.vertices(tier1_first_frame_human(args.episode)))
+    alignment["method"] = "object"
+    if alignment["rotation_deg"] > args.max_object_align_deg:
+        soma_from_camera = fix @ soma_from_camera
+        world_from_camera = to_soma @ soma_from_camera  # CV_TO_SOMA is its own inverse
+        relabel = np.linalg.inv(world_from_camera @ camera_from_object[0]) @ tier1_object0
+        camera_from_object = camera_from_object @ relabel
+        alignment.update(method="human", object_relabel_deg=round(float(np.degrees(np.arccos(
+            np.clip((np.trace(relabel[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)))), 2),
+            object_relabel_m=round(float(np.linalg.norm(relabel[:3, 3])), 3))
+    print(f"episode {args.episode}: alignment {alignment}")
+    object_pose7 = matrices_to_pose7(world_from_camera[None] @ camera_from_object)
+    vertices_soma = to_frame(soma_from_camera, vertices_cam)
     human = soma_inversion(vertices_soma, identity, args.device)
     human.update(identity)
 
@@ -328,7 +359,7 @@ def main() -> int:
     written = write_episode(tier_root, args.episode, human, object_pose7)
     report = {
         "episode_index": args.episode, "sequence": sequence, "frames": len(object_pose7), "written": str(written.relative_to(REPO)),
-        "identity_spread": spread, "soma_fit_vertex_error_cm": human["fit_vertex_error_cm"],
+        "identity_spread": spread, "alignment": alignment, "soma_fit_vertex_error_cm": human["fit_vertex_error_cm"],
         "reposed_vertex_error_cm_mean": human["reposed_vertex_error_cm_mean"],
     }
     report_path = tier_root / "conversion" / f"episode_{args.episode:06d}.json"

@@ -70,6 +70,15 @@ def main() -> int:
         if verdict.get("checks_failed", 1) != 0 or verdict.get("checks_passed", 0) == 0:
             skipped.append(row["episode_index"])
             continue
+        # Validation cannot see a scene that is self-consistent but turned (episodes 12, 14: 178 and
+        # 73 deg), so the frame-0 human alignment check must have passed too: either the converter
+        # placed the scene by the human, or the object-only alignment agreed with it within 20 deg.
+        conversion = tier_root / "conversion" / f"episode_{row['episode_index']:06d}.json"
+        report = json.loads(conversion.read_text()) if conversion.is_file() else {}
+        align = report.get("alignment") or report.get("alignment_check")
+        if not align or not (align.get("method") == "human" or align.get("rotation_deg", 999.0) <= 20.0):
+            skipped.append(row["episode_index"])
+            continue
         shapes = count_support_collision_shapes(out_root / "whole_body/reconstructed_stage" / f"{sequence}_support.usda")
         frames = pq.ParquetFile(reference).metadata.row_group(0).num_rows and len(
             pq.read_table(reference, columns=["robot_root_position"]).column(0)[0].as_py())
