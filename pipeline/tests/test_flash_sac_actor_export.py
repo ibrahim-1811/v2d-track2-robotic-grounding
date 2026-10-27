@@ -21,6 +21,7 @@ from pipeline.flash_sac_actor_export import (
     TRAINING_CONFIG_KEY,
     UPSTREAM_TARGET,
     UPSTREAM_TERM_NAMES,
+    VELOCITY_TARGET,
     ExportError,
     export_official_actor,
     project_evaluation_config,
@@ -338,3 +339,63 @@ def test_keypoint_export_records_its_own_reward_definition(tmp_path) -> None:
     assert "object_keypoints = mean over upstream's six object axes" in metadata[REWARD_DEFINITION_KEY]
     assert "object_keypoints" in metadata["user.export_warning"]
     assert json.loads(metadata[TRAINING_CONFIG_KEY])["objective"]["_target_"] == KEYPOINT_TARGET
+
+
+# --- the velocity arm (keypoints + object_velocity, fourteen terms) ----------
+
+
+def velocity_training_config() -> dict:
+    config = keypoint_training_config()
+    for objective in (config["objective"], config["env"]["objective"]):
+        objective.update(
+            {
+                "_target_": VELOCITY_TARGET,
+                "object_velocity_weight": 2.0,
+                "object_velocity_linear_scale": 0.5,
+                "object_velocity_angular_scale": 4.0,
+            }
+        )
+    for curriculum in (config["curriculum"], config["training"]["curriculum"]):
+        for stage in curriculum["stages"]:
+            stage["objective_weights"] = {**stage["objective_weights"], "object_velocity": 2.0}
+    return config
+
+
+def test_velocity_objective_projects_both_appended_terms_away() -> None:
+    projected = project_evaluation_config(velocity_training_config())
+    for objective in (projected["objective"], projected["env"]["objective"]):
+        assert objective["_target_"] == UPSTREAM_TARGET
+        assert not any(key.startswith(("object_keypoints", "object_velocity")) for key in objective)
+    for curriculum in (projected["curriculum"], projected["training"]["curriculum"]):
+        assert all(set(stage["objective_weights"]) == set(UPSTREAM_TERM_NAMES) for stage in curriculum["stages"])
+    note = projected["_orientation_projection"]
+    assert (note["removed_term"], note["removed_weight"]) == ("object_keypoints,object_velocity", 5.0)
+    assert note["removed_objective_target"] == VELOCITY_TARGET
+
+
+def test_velocity_curriculum_without_the_velocity_weight_is_refused() -> None:
+    config = velocity_training_config()
+    for stage in config["curriculum"]["stages"]:  # both curriculum copies share these stage dicts
+        stage["objective_weights"].pop("object_velocity", None)
+    with pytest.raises(ExportError, match="object_velocity"):
+        project_evaluation_config(config)
+
+
+def test_velocity_objective_missing_its_scale_is_refused() -> None:
+    config = velocity_training_config()
+    del config["env"]["objective"]["object_velocity_angular_scale"]
+    with pytest.raises(ExportError, match="object_velocity_angular_scale"):
+        project_evaluation_config(config)
+
+
+def test_velocity_export_records_both_terms(tmp_path) -> None:
+    source = tmp_path / "policy.safetensors"
+    make_checkpoint(source, {CONFIG_KEY: json.dumps(velocity_training_config()), "user.checkpoint_kind": "policy"})
+    destination = tmp_path / "portable.safetensors"
+    export_official_actor(source, destination)
+    metadata = read_checkpoint(destination)[0]["__metadata__"]
+    assert "object_velocity = 0.5 exp" in metadata[REWARD_DEFINITION_KEY]
+    assert "object_keypoints = mean" in metadata[REWARD_DEFINITION_KEY]
+    assert "object_keypoints, object_velocity" in metadata["user.export_warning"]
+    assert metadata["user.export_objective_terms_trained"] == "14"
+    assert json.loads(metadata[CONFIG_KEY])["objective"]["_target_"] == UPSTREAM_TARGET

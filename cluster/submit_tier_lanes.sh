@@ -38,7 +38,11 @@ for ep in $EPISODES; do
     dep_arg=(--dependency="$(IFS=,; echo "${deps[*]}")" --kill-on-invalid-dep=yes)
   fi
   name=$(printf 'v2d-%s-ep%02d' "$PREFIX" "$ep")
-  [ "${ARM:-stock}" != stock ] && name="$name-${ARM:0:2}"
+  case "${ARM:-stock}" in
+    stock) ;;
+    keypoints_*) name="$name-${ARM#keypoints_}" ;;
+    *) name="$name-${ARM:0:2}" ;;
+  esac
   seed_suffix=""
   [ -n "${SEED:-}" ] && [ "$SEED" != 42 ] && { seed_suffix="_s$SEED"; name="$name-s$SEED"; }
   cmd=(sbatch --parsable --job-name="$name" "${dep_arg[@]}" --export=ALL,EP="$ep",PREFIX="$PREFIX"
@@ -58,9 +62,11 @@ print(rows[0]["stationary_auc"])
 PY
 )
       run=$(printf '%s_ep%02d_%s%s' "$PREFIX" "$ep" "${ARM:-stock}" "$seed_suffix")
+      final_step=349999104
+      case "${ARM:-stock}" in *slowvoc) final_step=507500544 ;; esac
       eid=$(sbatch --parsable --job-name="${name/v2d-/v2d-eval-}" -t 01:00:00 \
             --dependency="afterok:$jid" --kill-on-invalid-dep=yes \
-            --export=ALL,RUN="$run",STEP=349999104,REPEATS=5,EPISODE="$ep",FLOOR="$floor" \
+            --export=ALL,RUN="$run",STEP="$final_step",REPEATS=5,EPISODE="$ep",FLOOR="$floor" \
             "$R/cluster/evaluate_policy.sbatch")
       echo "         eval of $run (floor $floor) -> job $eid"
     fi

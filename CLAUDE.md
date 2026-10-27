@@ -548,3 +548,36 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
 - Pack recovered Tier 2 with
   `PREFIX=t2r FRAME_REFS=outputs/tier2r_frame_references COMMIT_URL=... bash cluster/pack_tier.sh 2`.
   Packing now writes to `outputs/submission/<prefix>/`.
+- **First Tier 2 submission (2026-10-26, Kaggle 57669386-94)**: keypoint policies on the
+  noisy input, AUC 0.44190, SP-SR 0.600, MP-SR 0.500, MPPE 23.33331 — again identical to the
+  local pack (5th of 16 at the time). MPPE is dominated by 7 episodes that lose the object
+  (the same bat / bottle / squeegee tasks that fail in Tier 1).
+
+## Arm 4: object_velocity and the slow VOC fade (2026-10-27)
+
+- **The four object-dropping Tier 1 episodes (vacuum 1, bat 4, bottle 25, squeegee 28) are not
+  missing a contact reward.** `force_closure` is earned at the same rate as in solved episodes
+  (0.03-0.07 weighted per step vs 0.05-0.07). What differs: object terminations climb exactly as
+  the VOC assist fades (bottle: 11% at voc 1.0, 47% at 0.1, 72% at 0), and they are the **fast**
+  episodes - median reference object speed 0.36-0.48 m/s (bat peaks 2.47) vs 0.02-0.04 for eps 0/3.
+- Failure points in the submitted rollouts: bottle never lifts (fails at frame 126, two frames after
+  the reference lift starts; 0.17 m vs 0.65 m), bat is lost during a 1.26 m lift in under 2 s,
+  vacuum (frame 298) and squeegee (frame 527) are dropped mid-task. Five arms (s43, s44, term25,
+  grip10, grip15) left all four at AUC 0.12-0.25 (ep28 0.26-0.43).
+- **Arm 4 = `pipeline/flash_sac_velocity.py`**: arm 3's thirteen terms plus `object_velocity`
+  (origin linear + world angular velocity vs central differences of the reference, Laplacian,
+  0.5 m/s / 4 rad/s, weight 2.0). The reference's angular velocity has single-frame spikes up to
+  41 rad/s, so keep the angular scale loose. The exporter now projects multi-term objectives.
+- Arms: `ARM=keypoints_vel` (350M), `keypoints_slowvoc`, `keypoints_vel_slowvoc` (both
+  **507,500,544 steps** - the fade from 0.5 to 0 takes 262.5M instead of 105M, the zero-assist
+  phases keep upstream's 140M; evaluations land in `eval_507500544`).
+  `bash scripts/verify/verify_velocity_flash_sac.sh` checks it all.
+- **Result (2026-10-27, 5 repeats each) [VERIFIED]: neither change rescues vacuum, bat or bottle.**
+  Mean AUC vel / slowvoc / vel_slowvoc: ep01 0.199 / 0.186 / 0.217 (best earlier 0.250),
+  ep04 0.154 / 0.165 / 0.162 (0.167), ep25 0.108 / 0.127 / 0.126 (0.162). Only the squeegee moved:
+  ep28 0.453 / **0.527** / 0.495 (best earlier 0.434). Ten arms have now failed on eps 1, 4, 25 -
+  stop spending reward-shaping runs on them.
+- Smooth arm (100x action penalties) helped ep02 0.576 -> **0.750** and ep13 0.688 -> 0.702; no
+  gain elsewhere. Best-per-episode Tier 1 pack (local, official packer): AUC **0.8053**, SP-SR
+  0.8667, MP-SR 0.8667, MPPE 10.64. Recovered Tier 2 (t2r) pack: AUC **0.4807**, SP-SR 0.700,
+  MP-SR 0.467, MPPE 20.98 (Kaggle t2 entry: 0.4419 / 0.600 / 0.500 / 23.33).

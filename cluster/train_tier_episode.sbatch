@@ -41,7 +41,10 @@ export ADAPTER
 
 # ARM=stock (default) is NVIDIA's twelve-term objective; ARM=keypoints adds the ADD-shaped
 # object_keypoints term (pipeline/flash_sac_keypoints.py) through configs/keypoints/.
+# ARM=keypoints_vel adds object_velocity on top (pipeline/flash_sac_velocity.py);
+# *_slowvoc fades the VOC assist 2.5x more slowly over 507,500,544 steps.
 ARM=${ARM:-stock}
+case "$ARM" in *slowvoc) FINAL_STEP=507500544 ;; esac
 # Extra seeds get their own run: <prefix>_epNN_<arm>_s<seed>. Seed 42 keeps the bare name.
 SEED_SUFFIX=""
 [ -n "${SEED:-}" ] && [ "$SEED" != 42 ] && SEED_SUFFIX="_s$SEED"
@@ -56,6 +59,18 @@ case "$ARM" in
   keypoints)
     export CONFIGS=keypoints
     EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac ${EXTRA:-}"
+    ;;
+  keypoints_vel)
+    export CONFIGS=keypoints
+    EXTRA="objective=velocity_keypoints_recon_body curriculum=velocity_keypoints_recon_body_flash_sac ${EXTRA:-}"
+    ;;
+  keypoints_slowvoc)
+    export CONFIGS=keypoints
+    EXTRA="objective=keypoints_recon_body curriculum=keypoints_slowvoc_recon_body_flash_sac training.total_environment_steps=$FINAL_STEP ${EXTRA:-}"
+    ;;
+  keypoints_vel_slowvoc)
+    export CONFIGS=keypoints
+    EXTRA="objective=velocity_keypoints_recon_body curriculum=velocity_keypoints_slowvoc_recon_body_flash_sac training.total_environment_steps=$FINAL_STEP ${EXTRA:-}"
     ;;
   *) echo "unknown ARM=$ARM"; exit 2 ;;
 esac

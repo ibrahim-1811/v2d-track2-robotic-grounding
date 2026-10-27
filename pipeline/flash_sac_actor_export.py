@@ -83,9 +83,21 @@ KEYPOINT_REWARD_DEFINITION = (
     "composition and relabeling."
 )
 
-#: Every thirteen-term objective we train, keyed by its ``_target_``: the appended
-#: term, the config fields only it defines (its weight first), and its definition.
-THIRTEENTH_TERM_OBJECTIVES: dict[str, tuple[str, tuple[str, ...], str]] = {
+VELOCITY_TARGET = "pipeline.flash_sac_velocity.VelocityReconBodyObjectiveConfig"
+VELOCITY_TERMS = (KEYPOINT_TERM, "object_velocity")
+VELOCITY_REWARD_DEFINITION = (
+    KEYPOINT_REWARD_DEFINITION
+    + " object_velocity = 0.5 exp(-|v - v*| / object_velocity_linear_scale) + 0.5 exp(-|w - w*| / "
+    "object_velocity_angular_scale); (v, w) the object body origin's world linear and angular velocity "
+    "from Newton body_qd, (v*, w*) central differences of the object reference over frames f-1..f+1 "
+    "divided by the control step. Stored raw in replay; weighted and frame_dt-scaled only during "
+    "reward composition and relabeling."
+)
+
+#: Every objective we train beyond upstream's twelve terms, keyed by its ``_target_``:
+#: the appended term (or terms, in column order), the config fields only it defines
+#: (the first appended term's weight first), and its definition.
+THIRTEENTH_TERM_OBJECTIVES: dict[str, tuple[str | tuple[str, ...], tuple[str, ...], str]] = {
     ORIENTATION_TARGET: (ORIENTATION_TERM, (ORIENTATION_WEIGHT_FIELD,), REWARD_DEFINITION),
     EXPONENTIAL_ORIENTATION_TARGET: (
         ORIENTATION_TERM,
@@ -97,7 +109,24 @@ THIRTEENTH_TERM_OBJECTIVES: dict[str, tuple[str, tuple[str, ...], str]] = {
         ("object_keypoints_weight", "object_keypoints_scale", "object_keypoints_radius_fraction"),
         KEYPOINT_REWARD_DEFINITION,
     ),
+    VELOCITY_TARGET: (
+        VELOCITY_TERMS,
+        (
+            "object_keypoints_weight",
+            "object_keypoints_scale",
+            "object_keypoints_radius_fraction",
+            "object_velocity_weight",
+            "object_velocity_linear_scale",
+            "object_velocity_angular_scale",
+        ),
+        VELOCITY_REWARD_DEFINITION,
+    ),
 }
+
+
+def _appended_terms(target: str) -> tuple[str, ...]:
+    term = THIRTEENTH_TERM_OBJECTIVES[target][0]
+    return (term,) if isinstance(term, str) else term
 
 #: Config subtrees that must be identical between the native and the projected
 #: runtime config. Only the objective schema and the orientation weight may move.
@@ -193,7 +222,10 @@ def _upstream_objective_fields() -> frozenset[str]:
     )
 
 
-def _project_curriculum(curriculum: dict[str, Any], where: str, term: str = ORIENTATION_TERM) -> dict[str, Any]:
+def _project_curriculum(
+    curriculum: dict[str, Any], where: str, term: str | tuple[str, ...] = ORIENTATION_TERM
+) -> dict[str, Any]:
+    terms = (term,) if isinstance(term, str) else term
     stages = curriculum.get("stages")
     if not isinstance(stages, list) or not stages:
         raise ExportError(f"{where} has no stages")
@@ -204,9 +236,10 @@ def _project_curriculum(curriculum: dict[str, Any], where: str, term: str = ORIE
         weights = stage.get("objective_weights")
         if not isinstance(weights, dict):
             raise ExportError(f"{where} stage {index} has no objective_weights")
-        if term not in weights:
-            raise ExportError(f"{where} stage {index} has no {term} weight to project away")
-        remaining = {name: value for name, value in weights.items() if name != term}
+        for name in terms:
+            if name not in weights:
+                raise ExportError(f"{where} stage {index} has no {name} weight to project away")
+        remaining = {name: value for name, value in weights.items() if name not in terms}
         if set(remaining) != set(UPSTREAM_TERM_NAMES):
             raise ExportError(
                 f"{where} stage {index} would leave {sorted(remaining)}; expected upstream's twelve terms"
@@ -256,14 +289,14 @@ def project_evaluation_config(training_config: Mapping[str, Any]) -> dict[str, A
         raise ExportError(f"objective copies disagree on the thirteenth-term weight: {sorted(weights)}")
     weight = weights.pop()
     target = targets.pop()
-    term = THIRTEENTH_TERM_OBJECTIVES[target][0]
+    terms = _appended_terms(target)
 
     projected_curricula = 0
     for path in _CURRICULUM_PATHS:
         node, leaf = parent_of(path)
         if not isinstance(node, dict) or leaf not in node:
             continue
-        node[leaf] = _project_curriculum(node[leaf], path, term)
+        node[leaf] = _project_curriculum(node[leaf], path, terms)
         projected_curricula += 1
     if projected_curricula == 0:
         raise ExportError("training config has no curriculum to project")
@@ -286,12 +319,13 @@ def project_evaluation_config(training_config: Mapping[str, Any]) -> dict[str, A
     remaining = json.dumps(config)
     if any(local in remaining for local in THIRTEENTH_TERM_OBJECTIVES):
         raise ExportError("projected config still names the local training module")
-    if f'"{term}"' in remaining:
-        raise ExportError(f"projected config still carries an {term} weight")
+    for term in terms:
+        if f'"{term}"' in remaining:
+            raise ExportError(f"projected config still carries an {term} weight")
     config["_orientation_projection"] = {
         "note": "EVALUATION RECONSTRUCTION ONLY. This is not the reward that trained the actor.",
         "removed_objective_target": target,
-        "removed_term": term,
+        "removed_term": ",".join(terms),
         "removed_weight": weight,
         "training_config_key": TRAINING_CONFIG_KEY,
     }
@@ -335,7 +369,8 @@ def export_official_actor(
     training_config = json.loads(metadata[CONFIG_KEY])
     evaluation_config = project_evaluation_config(training_config)
     target = evaluation_config["_orientation_projection"]["removed_objective_target"]
-    term, _, definition = THIRTEENTH_TERM_OBJECTIVES[target]
+    _, _, definition = THIRTEENTH_TERM_OBJECTIVES[target]
+    terms = _appended_terms(target)
 
     exported = dict(metadata)
     exported[CONFIG_KEY] = json.dumps(evaluation_config, separators=(",", ":"), sort_keys=True)
@@ -345,11 +380,12 @@ def export_official_actor(
     exported["user.export_parent_sha256"] = _sha256(native_policy)
     exported["user.export_parent_name"] = native_policy.name
     exported["user.export_exporter_sha256"] = _sha256(Path(__file__))
-    exported["user.export_objective_terms_trained"] = str(len(UPSTREAM_TERM_NAMES) + 1)
+    exported["user.export_objective_terms_trained"] = str(len(UPSTREAM_TERM_NAMES) + len(terms))
     exported["user.export_objective_terms_evaluated"] = str(len(UPSTREAM_TERM_NAMES))
+    trained_with = f"a thirteenth {terms[0]} reward term" if len(terms) == 1 else "extra reward terms " + ", ".join(terms)
     exported["user.export_warning"] = (
         "resolved_config_json is an evaluation-only reconstruction. The actor was trained with "
-        f"a thirteenth {term} reward term; see " + TRAINING_CONFIG_KEY
+        f"{trained_with}; see " + TRAINING_CONFIG_KEY
     )
     for name, value in (provenance or {}).items():
         exported[f"user.export_{name}"] = str(value)
