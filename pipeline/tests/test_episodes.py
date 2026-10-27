@@ -31,6 +31,7 @@ from pipeline.episodes import (
     out_root_for_tier,
     parse_episode_selector,
     select,
+    tier_root_for,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -218,6 +219,19 @@ def test_an_unknown_tier_gets_its_own_root():
     root = out_root_for_tier("tier_3_reconstruction")
     assert root != out_root_for_tier(TIER_1)
     assert "tier_3_reconstruction" in root.name
+
+
+def test_a_reconstructed_tier_resolves_outside_the_mirror(tmp_path: Path):
+    """Our Tier 3 lives under data/reconstructed/, never inside the pristine HF mirror."""
+    (tmp_path / "data/reconstructed/track_2/tier_3_x/meta").mkdir(parents=True)
+    assert tier_root_for("tier_3_x", tmp_path) == tmp_path / "data/reconstructed/track_2/tier_3_x"
+    assert tier_root_for(TIER_1, tmp_path) == tmp_path / "data/v2d_challenge/track_2" / TIER_1
+
+
+def test_a_published_tier_wins_over_a_reconstructed_namesake(tmp_path: Path):
+    for root in ("data/v2d_challenge/track_2/tier_3_x", "data/reconstructed/track_2/tier_3_x"):
+        (tmp_path / root).mkdir(parents=True)
+    assert tier_root_for("tier_3_x", tmp_path) == tmp_path / "data/v2d_challenge/track_2/tier_3_x"
 
 
 def test_provenance_records_the_tier_and_the_source_hash(tier_1):

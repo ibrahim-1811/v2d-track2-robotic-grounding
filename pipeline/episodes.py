@@ -49,6 +49,9 @@ from pathlib import Path
 TRACK_2 = "data/v2d_challenge/track_2"
 TIER_1 = "tier_1_multiview_caption"
 TIER_2 = "tier_2_synthetic_noise"
+#: Tiers we build ourselves (Tier 3 reconstructions), laid out exactly like a published tier
+#: but kept out of the pristine Hugging Face mirror under TRACK_2.
+TRACK_2_RECONSTRUCTED = "data/reconstructed/track_2"
 
 #: Staged output root per tier, relative to the repo root. Tier 1 is pinned to
 #: the pre-existing path so nothing produced before this change moves.
@@ -80,6 +83,20 @@ class RegistryError(RuntimeError):
 def repo_root() -> Path:
     """The repository root, derived from this file's location."""
     return Path(__file__).resolve().parents[1]
+
+
+def tier_root_for(tier: str, repo: Path | None = None) -> Path:
+    """Input root of ``tier``: the published mirror, else one of our reconstructed tiers.
+
+    A name in both places resolves to the published mirror, so a later official release of a
+    same-named tier can never be shadowed by our own data.
+    """
+    repo = repo or repo_root()
+    published = repo / TRACK_2 / tier
+    reconstructed = repo / TRACK_2_RECONSTRUCTED / tier
+    if not published.is_dir() and reconstructed.is_dir():
+        return reconstructed
+    return published
 
 
 def out_root_for_tier(tier: str, repo: Path | None = None) -> Path:
@@ -326,7 +343,7 @@ def load_tier(
     half-downloaded mirror is reported once, up front, with the missing paths.
     """
     repo = repo or repo_root()
-    tier_root = repo / TRACK_2 / tier
+    tier_root = tier_root_for(tier, repo)
     meta = tier_root / "meta/episodes_metadata.jsonl"
     info_path = tier_root / "meta/info.json"
     if not meta.is_file():

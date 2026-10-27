@@ -581,3 +581,44 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   gain elsewhere. Best-per-episode Tier 1 pack (local, official packer): AUC **0.8053**, SP-SR
   0.8667, MP-SR 0.8667, MPPE 10.64. Recovered Tier 2 (t2r) pack: AUC **0.4807**, SP-SR 0.700,
   MP-SR 0.467, MPPE 20.98 (Kaggle t2 entry: 0.4419 / 0.600 / 0.500 / 23.33).
+
+- **Second uploads (2026-10-27, commit 870a798), again identical to the local packs**: Tier 1
+  Kaggle 57699735-46 AUC 0.80534 / SP-SR 0.86666 / MP-SR 0.86666 / MPPE 10.64053; Tier 2 (t2r)
+  57699751-56 AUC 0.48070 / 0.70000 / 0.46666 / 20.97937. The working kit on Ibrahim's PC is
+  `~/v2d_submission_kit` (own `.venv`, Kaggle login `ibrahimmemon1811`).
+
+## Tier 3 via CARI4D: first measurement (2026-10-27)
+
+- **Still no Tier 3 download** (HF tree re-checked 2026-10-27: only tiers 1-2), although the kit's
+  packer already names `track_2/tier_3_cari4d/`. We build our own and pack with `--frame-references`.
+- **CARI4D's Episode 0 object track is good once aligned with Tier 1's first frame** (the only
+  alignment the FAQ allows): AUC **0.7405**, MPPE 2.97 cm, 1.66 deg mean rotation error, vs the
+  stationary floor 0.3769 (reproduced exactly) and the Tier 3 leader's 0.329 *policy* score.
+  FoundationPose alone 0.6915; CoCoNet and post-opt add the rest. One easy episode only.
+  `scripts/tier3/score_cari4d_object.py` (dump-reference in flash_chord.sif, score in cari4d.sif).
+  The GLB CARI4D uses and the adapter's OBJ share vertices exactly (rigid-fit residual 0.000 mm).
+- CARI4D peaks at ~17 GB RAM / 1 h 14 min for 778 frames on an A100. SAM3 masks with
+  `--state_on_cpu` exceed 64 GB on long episodes; run them one episode per job at 150 GB.
+- **cari4d.sif's Warp is a CUDA 13 build and refuses sm_70**: anything that runs SOMA-X (Warp
+  kernels) or CARI4D must exclude the V100 nodes `wr[14-19]`. SAM3 masks (PyTorch only) run there fine.
+- **The fingers have no prior at all.** The body runs on the pinned GEAR-SONIC controller plus a 0.15
+  residual; each Dex3 finger target is the reference joint (constant - soma_to_g1 does not drive the
+  hands) plus the policy residual. The Tier 1 human fingers barely move either (median range 5-8 deg,
+  max ~28 deg per episode), so retargeting human fingers would not produce grasps.
+- Converter still to build: CARI4D `refined.pth` (`pr.mhr_*`, `postopt.optimized_parameters`) ->
+  vertices via CARI4D's own `lib_mhr.MHRLayer` -> SOMA via upstream `v2d_sam3d_body/lib/export_soma.py`
+  (Path A, vertices; `soma` is in cari4d.sif, SOMA-X assets are a public download) -> challenge-format
+  episode in Tier 1's raw frame -> retarget on the PC (`robotic-grounding:latest` is not on the cluster).
+
+## Rule discipline for Tiers 2 and 3 (decided 2026-10-27)
+
+- **No design decision for Tier 2 or Tier 3 may use the Tier 1 caption** - not as input, not to tune a
+  threshold, not to pick a method, not as a report used for go/no-go. Tier 3 may read Tier 1's frame-0
+  object pose for alignment only (FAQ); Tier 2 recovery must stand on Tier 2 data plus physics.
+  Choosing between whole submissions by their Kaggle (or identical local-pack) score is ordinary
+  leaderboard use and stays allowed.
+- Consequences: `recover_tier2_object.py`'s static hold and its 3 cm/s threshold were chosen by scoring
+  against Tier 1 (`--evaluate`), so the t2r entry (Kaggle 0.48070) is treated as grey and will not be
+  a final selection; it is being replaced by a Tier-2-only recovery. `cari4d_to_lerobot.py` has no
+  Tier 1 comparison. `score_cari4d_object.py` was a one-off Episode 0 feasibility check (AUC 0.7405)
+  and must not be used to select or tune anything for Tier 3.
