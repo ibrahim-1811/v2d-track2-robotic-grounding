@@ -648,6 +648,6 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   where the object is held. `ARM=keypoints_smooth` is now a named arm (100x `action_rate_l2` /
   `action_l2`).
 - **Slurm reservation `maint_2026-10-30`**: every GPU node from 2026-10-30 13:00 CET, no end date
-  (365-day placeholder), no MOTD notice. Train, evaluate and pack all tiers before then, and copy the
-  CSVs to Ibrahim's PC. `train_tier_episode.sbatch` now asks for 6 h (runs take ~3 h) so jobs keep
-  starting until ~07:00 that day. Check `scontrol show res` daily.
+  (365-day placeholder), no MOTD notice. The maintainer expects it to last hours, a day at most, so
+  training stays on the cluster; jobs simply cannot run across the window. `train_tier_episode.sbatch`
+  now asks for 6 h (runs take ~3 h) so jobs keep starting until ~07:00 that day.

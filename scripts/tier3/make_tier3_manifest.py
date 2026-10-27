@@ -56,12 +56,19 @@ def main() -> int:
 
     tier_root, out_root = tier_root_for(args.tier), out_root_for_tier(args.tier)
     rows = [json.loads(line) for line in (tier_root / "meta/episodes_metadata.jsonl").read_text().splitlines() if line.strip()]
-    episodes = []
+    episodes, skipped = [], []
     for row in sorted(rows, key=lambda r: r["episode_index"]):
         sequence = row["sequence_id"]
         retarget = out_root / "whole_body/soma" / f"sequence_id={sequence}"
         reference = retarget / "robot_name=g1/data.parquet"
         if not reference.is_file():
+            continue
+        # Only references that passed run_tier_pipeline.py validate (run here, on the files we
+        # train from) are trainable; a failed reconstruction must not reach the GPUs.
+        record = REPO / "outputs" / args.tier / "records" / f"{row['episode_index']:06d}_validate.json"
+        verdict = json.loads(record.read_text()) if record.is_file() else {}
+        if verdict.get("checks_failed", 1) != 0 or verdict.get("checks_passed", 0) == 0:
+            skipped.append(row["episode_index"])
             continue
         shapes = count_support_collision_shapes(out_root / "whole_body/reconstructed_stage" / f"{sequence}_support.usda")
         frames = pq.ParquetFile(reference).metadata.row_group(0).num_rows and len(
@@ -83,7 +90,7 @@ def main() -> int:
                         "(scripts/tier3/cari4d_to_lerobot.py), retargeted with the unchanged pipeline.",
                 "episodes": episodes}
     Path(args.out).write_text(json.dumps(manifest, indent=1) + "\n")
-    print(f"{len(episodes)} episode(s) -> {args.out}")
+    print(f"{len(episodes)} episode(s) -> {args.out}; not validated or failed, left out: {skipped}")
     for e in episodes:
         print(f"  ep{e['episode_index']:02d} support={str(e['scene_support']).lower():5s} frames={e['frames']} "
               f"stationary_auc={e['stationary_auc']}")

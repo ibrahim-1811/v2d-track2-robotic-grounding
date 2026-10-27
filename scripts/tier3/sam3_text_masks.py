@@ -114,6 +114,34 @@ def clean(mask: np.ndarray, keep_fraction: float = 0.05) -> np.ndarray:
     return np.isin(labels, keep)
 
 
+def implausible_frames(seq: dict, shape: tuple[int, int], window: int = 3) -> list[int]:
+    """Frames where the tracked actor's mask collapses AND jumps -- a stray blob, not a person.
+
+    SAM3 occasionally hands one frame of the actor's track to a small blob elsewhere in the image
+    (episodes 6 and 9, frame 4: 2.4k px at the far side vs 34k px on the actor either side), and
+    CARI4D then puts the human metres away for that frame. A frame is dropped -- and refilled by
+    the tracker like any missed frame -- only when both hold: area < 25% of the track's median, and
+    centroid more than half the actor's median height from the median of its +-3 neighbours (no
+    one moves half their height in 1/30 s). Occlusion alone shrinks the mask but does not move it.
+    """
+    stats = {}
+    for f, (bits, _) in seq.items():
+        mask = unpack(bits, shape)
+        ys, xs = np.nonzero(mask)
+        if len(ys):
+            stats[f] = (len(ys), np.array([xs.mean(), ys.mean()]), np.ptp(ys))
+    if len(stats) < 2 * window + 1:
+        return []
+    median_area = np.median([a for a, _, _ in stats.values()])
+    median_height = np.median([h for _, _, h in stats.values()])
+    bad = []
+    for f, (a, c, _) in stats.items():
+        neighbours = [stats[g][1] for g in range(f - window, f + window + 1) if g != f and g in stats]
+        if a < 0.25 * median_area and neighbours and np.linalg.norm(c - np.median(neighbours, axis=0)) > 0.5 * median_height:
+            bad.append(int(f))
+    return sorted(bad)
+
+
 def centroid(mask: np.ndarray) -> np.ndarray | None:
     ys, xs = np.nonzero(mask)
     return None if xs.size == 0 else np.array([xs.mean(), ys.mean()])
@@ -144,6 +172,9 @@ def main() -> int:
     area = {oid: sum(int(np.unpackbits(bits).sum()) for bits, _ in seq.values()) for oid, seq in people.items()}
     actor_id = max(area, key=area.get)
     actor = people[actor_id]
+    glitches = implausible_frames(actor, shape)
+    for f in glitches:
+        del actor[f]
     actor_centres = {f: centroid(unpack(bits, shape)) for f, (bits, _) in actor.items()}
     actor_height = np.median([np.ptp(np.nonzero(unpack(bits, shape))[0]) for bits, _ in actor.values()])
 
@@ -189,6 +220,7 @@ def main() -> int:
         "person_instances": {str(k): v for k, v in area.items()},
         "actor_id": actor_id,
         "actor_frames": len(actor),
+        "actor_glitch_frames_dropped": glitches,
         "object_text": object_text,
         "object_instances_near_score": {str(k): round(v, 1) for k, v in near.items()},
         "object_id": object_id,
