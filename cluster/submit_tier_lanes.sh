@@ -25,6 +25,9 @@ DRY=${DRY:-0}
 # behind each training job, afterok, so a finished policy is scored without a second step.
 EVAL=${EVAL:-0}
 MANIFEST=${MANIFEST:-training_manifest_verified.json}
+# NICE=<n> queues the whole wave behind other pending jobs of ours (sbatch --nice).
+NICE_ARG=()
+[ -n "${NICE:-}" ] && NICE_ARG=(--nice="$NICE")
 
 declare -a last
 i=0
@@ -45,7 +48,7 @@ for ep in $EPISODES; do
   esac
   seed_suffix=""
   [ -n "${SEED:-}" ] && [ "$SEED" != 42 ] && { seed_suffix="_s$SEED"; name="$name-s$SEED"; }
-  cmd=(sbatch --parsable --job-name="$name" "${dep_arg[@]}" --export=ALL,EP="$ep",PREFIX="$PREFIX"
+  cmd=(sbatch --parsable --job-name="$name" "${NICE_ARG[@]}" "${dep_arg[@]}" --export=ALL,EP="$ep",PREFIX="$PREFIX"
        "$R/cluster/train_tier_episode.sbatch")
   if [ "$DRY" = 1 ]; then
     echo "lane $lane: ${cmd[*]}"
@@ -64,7 +67,7 @@ PY
       run=$(printf '%s_ep%02d_%s%s' "$PREFIX" "$ep" "${ARM:-stock}" "$seed_suffix")
       final_step=349999104
       case "${ARM:-stock}" in *slowvoc) final_step=507500544 ;; esac
-      eid=$(sbatch --parsable --job-name="${name/v2d-/v2d-eval-}" -t 01:00:00 \
+      eid=$(sbatch --parsable --job-name="${name/v2d-/v2d-eval-}" -t 01:00:00 "${NICE_ARG[@]}" \
             --dependency="afterok:$jid" --kill-on-invalid-dep=yes \
             --export=ALL,RUN="$run",STEP="$final_step",REPEATS=5,EPISODE="$ep",FLOOR="$floor" \
             "$R/cluster/evaluate_policy.sbatch")

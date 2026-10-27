@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=12:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=/work/mnidgu2s/project/v2d-track2-robotic-grounding/logs/train_%x_%j.out
 
 # One policy for one episode. Looks up the episode's sequence and scene.support flag in
@@ -67,6 +67,12 @@ case "$ARM" in
     # a few degrees (Tier 1 AUC 0.6-0.8); env.objective follows via Hydra's ${objective}.
     export CONFIGS=keypoints
     EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac objective.object_keypoints_scale=0.03 ${EXTRA:-}"
+    ;;
+  keypoints_smooth)
+    # 100x action_rate_l2 / action_l2 penalties: same AUC or better on held-object episodes and
+    # 19-69% less joint shake (cluster/diagnose_jitter.sbatch, CLAUDE.md "Arm 4" / "smooth").
+    export CONFIGS=keypoints
+    EXTRA="objective=keypoints_recon_body curriculum=keypoints_smooth_recon_body_flash_sac objective.action_rate_l2_weight=-0.01 objective.action_l2_weight=-0.0001 ${EXTRA:-}"
     ;;
   keypoints_vel)
     export CONFIGS=keypoints

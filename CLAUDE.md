@@ -641,5 +641,13 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   a 5-frame release. Parameters fixed from physics before scoring; no Tier 1 code path. Episodes
   0, 28, 29 are never held, so `t2c_ep{00,28,29}_keypoints` are symlinks to the identical-input t2 runs.
 - **Tighter keypoints** (`ARM=keypoints_tight`, scale 0.03) on Tier 1 eps 2, 9, 11, 17, 19, 26, 27.
-- `cluster/diagnose_jitter.sbatch` measures per-policy joint shake; the smooth arm has not been
-  measured yet (first run queued). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42, ours 0.8-1.0.
+- `cluster/diagnose_jitter.sbatch` measures per-policy joint shake (mean step-to-step joint change
+  of the simulated robot, unassisted world-1 rollout). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42,
+  keypoints 0.74-1.07. **The smooth arm cuts it on every paired episode**: ep02 0.74 -> 0.60, ep04
+  1.01 -> 0.68, ep13 1.07 -> 0.47, ep24 0.90 -> **0.28** (SONIC alone: 0.24), with AUC equal or better
+  where the object is held. `ARM=keypoints_smooth` is now a named arm (100x `action_rate_l2` /
+  `action_l2`).
+- **Slurm reservation `maint_2026-10-30`**: every GPU node from 2026-10-30 13:00 CET, no end date
+  (365-day placeholder), no MOTD notice. Train, evaluate and pack all tiers before then, and copy the
+  CSVs to Ibrahim's PC. `train_tier_episode.sbatch` now asks for 6 h (runs take ~3 h) so jobs keep
+  starting until ~07:00 that day. Check `scontrol show res` daily.
