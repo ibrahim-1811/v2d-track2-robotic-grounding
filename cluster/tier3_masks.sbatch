@@ -14,6 +14,7 @@
 # this step for any episode whose masks/<seq>/selection.json exists.
 #
 #   EPS="0" sbatch cluster/tier3_masks.sbatch
+#   EPS="7" PROMPT="metallic iron with blue accents" sbatch cluster/tier3_masks.sbatch   # when the bare name finds nothing
 set -uo pipefail
 R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
 SIF=$R/containers/cari4d.sif
@@ -37,7 +38,7 @@ PY
   echo "== ep$EP $SEQ ($OBJ) $(date +%H:%M)"
   apptainer exec --nv --cleanenv -B "$R" -B "$O/tmp/$SLURM_JOB_ID":/tmp --env HOME=/tmp \
     --env HF_HOME="$W/hf_home" --env HF_HUB_OFFLINE=1 "$SIF" \
-    python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "$OBJ" \
+    python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "${PROMPT:-$OBJ}" \
       --masks_dir "$M/$SEQ" --sam3_path "$W/sam3" --dtype float32 --state_on_cpu < /dev/null || failed=1
 done
 exit $failed

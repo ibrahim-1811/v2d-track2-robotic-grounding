@@ -56,9 +56,17 @@ if [ -z "${EXTRA:-}" ] && [ -f "$R/outputs/cluster/$TAG/policy_${FINAL_STEP}.saf
 fi
 case "$ARM" in
   stock) ;;
-  keypoints)
+  keypoints|keypoints_closegrip)
+    # closegrip = the keypoint recipe on references with a scripted Dex3 grip
+    # (scripts/train/make_grip_references.py; pass MANIFEST=training_manifest_t1grip.json).
     export CONFIGS=keypoints
     EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac ${EXTRA:-}"
+    ;;
+  keypoints_tight)
+    # keypoint Laplacian at 3 cm instead of 5 cm, for episodes that hold the object but tilt it
+    # a few degrees (Tier 1 AUC 0.6-0.8); env.objective follows via Hydra's ${objective}.
+    export CONFIGS=keypoints
+    EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac objective.object_keypoints_scale=0.03 ${EXTRA:-}"
     ;;
   keypoints_vel)
     export CONFIGS=keypoints

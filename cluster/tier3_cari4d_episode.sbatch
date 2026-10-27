@@ -51,7 +51,7 @@ c4d() {
 
 if [ ! -f "$O/masks/$SEQ/selection.json" ]; then
   echo "== 1. SAM3 masks"
-  c4d python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "$OBJ" \
+  c4d python "$R/scripts/tier3/sam3_text_masks.py" --video_path "$VIDEO" --object_name "${PROMPT:-$OBJ}" \
     --masks_dir "$O/masks/$SEQ" --sam3_path "$W/sam3"
 fi
 if [ ! -f "$O/masks/${SEQ}_masks_k0.h5" ]; then
@@ -61,6 +61,31 @@ if [ ! -f "$O/masks/${SEQ}_masks_k0.h5" ]; then
     --output_path "$O/masks/${SEQ}_masks_k0.h5"
 fi
 echo "== 3. CARI4D"
+# One-line fix to upstream's FoundationPose export, applied to a copy and bind-mounted over the
+# image's file (official/ and the image stay untouched). When the hand completely covers a small
+# object, its rendered-visible area is 0 and measure_visible_silhouettes leaves centroid_distance
+# at +inf; the export records that diagnostic verbatim and its own validator then rejects the
+# whole run ("fp_centroid_distance contains infinity" -- mug, bat, book, sign, cone, cane, bottle).
+# Upstream already writes NaN for an undefined value (_selected_metric_values) and the validator
+# accepts NaN; nothing downstream reads this field. So: undefined -> NaN, nothing else changes.
+FP_EXPORT=/workspace/v2d_cari4d/lib/cari4d/prep/run_foundationpose_mhr_export.py
+PATCHED=$O/tmp/$SLURM_JOB_ID/run_foundationpose_mhr_export.py
+apptainer exec --cleanenv "$SIF" cat "$FP_EXPORT" > "$PATCHED"
+OLD='selection_diagnostics["fp_centroid_distance"].append(float(metric_values["centroid_distance"]))'
+NEW='selection_diagnostics["fp_centroid_distance"].append(float(metric_values["centroid_distance"]) if np.isfinite(metric_values["centroid_distance"]) else float("nan"))'
+python3 - "$PATCHED" "$OLD" "$NEW" <<'PY'
+import sys
+path, old, new = sys.argv[1:]
+text = open(path).read()
+if text.count(old) != 1 or "import numpy as np" not in text:
+    sys.exit("FoundationPose export patch does not apply cleanly; refusing to run a guessed fix")
+open(path, "w").write(text.replace(old, new))
+PY
+c4d() {  # same as above, plus the patched export
+  apptainer exec --nv --cleanenv -B "$R" -B "$O/tmp/$SLURM_JOB_ID":/tmp -B "$PATCHED:$FP_EXPORT:ro" \
+    --env HOME=/tmp --env HF_HOME="$W/hf_home" --env HF_HUB_OFFLINE=1 \
+    "$SIF" "$@"
+}
 c4d python -m v2d.cari4d.lib.run_inference --video_path "$VIDEO" \
   --mask_h5_path "$O/masks/${SEQ}_masks_k0.h5" --object_mesh_path "$T2/$MESH" \
   --weights_path "$W" --output_dir "$O/cari4d" --skip_weight_download --expected_frames "$FRAMES"

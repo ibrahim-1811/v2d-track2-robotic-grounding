@@ -622,3 +622,24 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   a final selection; it is being replaced by a Tier-2-only recovery. `cari4d_to_lerobot.py` has no
   Tier 1 comparison. `score_cari4d_object.py` was a one-off Episode 0 feasibility check (AUC 0.7405)
   and must not be used to select or tune anything for Tier 3.
+
+## The "robust system" wave (started 2026-10-27 ~14:30 CET)
+
+- **Tier 3 end to end works on Episode 0**: CARI4D -> `cari4d_to_lerobot.py` -> retarget on Ibrahim's
+  PC (`run_tier_pipeline.py stage/retarget/validate --tier tier_3_cari4d_ours`, rsync back) -> all 45
+  reference checks pass on the cluster (IK 0.92x NVIDIA's demo) -> `make_tier3_manifest.py`
+  (`training_manifest_tier3.json`, Tier-1-free floor) -> `PREFIX=t3 ARM=keypoints` training.
+- **CARI4D "fp_centroid_distance contains infinity"** (small hand-held objects fully covered by the
+  hand: mug, bat, book, sign, cone, cane, bottle) is fixed by a one-line patch applied in
+  `tier3_cari4d_episode.sbatch` to a copy of upstream's export, bind-mounted over the image's file.
+  SAM3 found no "iron": `PROMPT="metallic iron with blue accents"` (masks sbatch override).
+- **Scripted grip** (`make_grip_references.py`, `ARM=keypoints_closegrip`,
+  `MANIFEST=training_manifest_t1grip.json`): Dex3 fingers close to 0.6 x their far limit while the
+  reference's `hand_contact_active` is set; only the 12 closing finger columns change.
+- **Rules-clean Tier 2** (`recover_tier2_contact.py`, prefix `t2c`): hold the object unless a palm or
+  foot (URDF FK, checked against the stored palms: 0.00 cm) is within bounding radius + 0.10 m, with
+  a 5-frame release. Parameters fixed from physics before scoring; no Tier 1 code path. Episodes
+  0, 28, 29 are never held, so `t2c_ep{00,28,29}_keypoints` are symlinks to the identical-input t2 runs.
+- **Tighter keypoints** (`ARM=keypoints_tight`, scale 0.03) on Tier 1 eps 2, 9, 11, 17, 19, 26, 27.
+- `cluster/diagnose_jitter.sbatch` measures per-policy joint shake; the smooth arm has not been
+  measured yet (first run queued). Reference 0.1-0.2 deg, SONIC alone 0.24-0.42, ours 0.8-1.0.
