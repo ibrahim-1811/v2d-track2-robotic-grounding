@@ -125,21 +125,24 @@ def size_plausibility(ratio: float) -> float:
     return float(np.exp(-np.log(ratio / 1.5) ** 2 / (2 * np.log(2) ** 2)))
 
 
+def object_glitch(mask: np.ndarray, anchor, expected_px: float, actor_height: float) -> bool:
+    """A frame where an object track sits on something else: more than 3x the object's expected image
+    size AND either more than one actor height from the actor or touching the image border. SAM3
+    repeatedly returns a full-height strip along the left image border for small objects (episodes
+    2, 3, 4, 9, 16, 17, 20, 25, 27); for the cone in episode 17 it is within one actor height."""
+    ys, xs = np.nonzero(mask)
+    if not len(ys) or anchor is None or max(np.ptp(ys), np.ptp(xs)) / expected_px <= 3.0:
+        return False
+    height, width = mask.shape
+    border = xs.min() <= 1 or ys.min() <= 1 or xs.max() >= width - 2 or ys.max() >= height - 2
+    return border or np.linalg.norm(np.array([xs.mean(), ys.mean()]) - anchor) / actor_height > 1.0
+
+
 def implausible_object_frames(seq: dict, shape: tuple[int, int], expected_px: float, actor_centres: dict,
                               actor_height: float) -> list[int]:
-    """Frames where the kept object's track sits on something else: more than 3x the object's expected
-    image size AND more than one actor height from the actor (the strip along the left image border
-    in episodes 2 and 16). Dropped frames are refilled by the tracker like any missed frame."""
-    bad = []
-    for f, (bits, _) in seq.items():
-        ys, xs = np.nonzero(unpack(bits, shape))
-        anchor = actor_centres.get(f)
-        if not len(ys) or anchor is None:
-            continue
-        far = np.linalg.norm(np.array([xs.mean(), ys.mean()]) - anchor) / actor_height > 1.0
-        if far and max(np.ptp(ys), np.ptp(xs)) / expected_px > 3.0:
-            bad.append(int(f))
-    return sorted(bad)
+    """The kept object's glitch frames (object_glitch); dropped and refilled by the tracker."""
+    return sorted(int(f) for f, (bits, _) in seq.items()
+                  if object_glitch(unpack(bits, shape), actor_centres.get(f), expected_px, actor_height))
 
 
 def implausible_frames(seq: dict, shape: tuple[int, int], window: int = 3) -> list[int]:
@@ -223,28 +226,33 @@ def main() -> int:
         expected_px = extent_m / HUMAN_HEIGHT_M * actor_height
     near, fit = {}, {}
     for oid, seq in objects.items():
-        total, ratios, distances = 0.0, [], []
+        total, ratios, distances, glitch_frames = 0.0, [], [], 0
         for f, (bits, score) in seq.items():
             mask = unpack(bits, shape)
             centre, anchor = centroid(mask), actor_centres.get(f)
             if centre is None or anchor is None:
                 continue
             distance = np.linalg.norm(centre - anchor) / actor_height
-            area, plausible = mask.sum(), 1.0
+            mask_area, plausible = mask.sum(), 1.0  # not `area`: that names the person instances
+            if expected_px is not None and object_glitch(mask, anchor, expected_px, actor_height):
+                glitch_frames += 1
+                continue
             if expected_px is not None:
                 ys, xs = np.nonzero(mask)
                 ratio = max(np.ptp(ys), np.ptp(xs)) / expected_px
                 plausible = size_plausibility(ratio)
-                area = min(area, expected_px ** 2)  # no reward for being bigger than the object
+                mask_area = min(mask_area, expected_px ** 2)  # no reward for being bigger than the object
                 ratios.append(ratio)
             distances.append(distance)
-            total += area * score * np.exp(-distance) * plausible
+            total += mask_area * score * np.exp(-distance) * plausible
         near[oid] = total
         fit[oid] = {"size_ratio_median": round(float(np.median(ratios)), 2) if ratios else None,
-                    "actor_distance_median": round(float(np.median(distances)), 2) if distances else None}
+                    "actor_distance_median": round(float(np.median(distances)), 2) if distances else None,
+                    "glitch_frames": glitch_frames, "clean_frames": len(distances)}
     object_id = max(near, key=near.get)
     chosen = fit[object_id]
-    if chosen["size_ratio_median"] is not None and chosen["size_ratio_median"] > 3.0 and chosen["actor_distance_median"] > 1.0:
+    if chosen["clean_frames"] < 0.25 * len(frames) or (chosen["size_ratio_median"] is not None
+                                                        and chosen["size_ratio_median"] > 3.0 and chosen["actor_distance_median"] > 1.0):
         raise SystemExit(f"best {object_text!r} instance is implausible ({chosen}); refusing to hand CARI4D a wrong object")
     object_glitches = []
     if expected_px is not None:

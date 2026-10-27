@@ -74,6 +74,12 @@ case "$ARM" in
     export CONFIGS=keypoints
     EXTRA="objective=keypoints_recon_body curriculum=keypoints_smooth_recon_body_flash_sac objective.action_rate_l2_weight=-0.01 objective.action_l2_weight=-0.0001 ${EXTRA:-}"
     ;;
+  keypoints_gentle)
+    # smooth + half the body residual (0.15 -> 0.075; fingers keep 0.15), so GEAR-SONIC's own gait
+    # and posture dominate: the residual, not SONIC, is what shakes the pelvis and torso.
+    export CONFIGS=keypoints
+    EXTRA="objective=keypoints_recon_body curriculum=keypoints_smooth_recon_body_flash_sac objective.action_rate_l2_weight=-0.01 objective.action_l2_weight=-0.0001 action.residual_scale=0.075 ${EXTRA:-}"
+    ;;
   keypoints_vel)
     export CONFIGS=keypoints
     EXTRA="objective=velocity_keypoints_recon_body curriculum=velocity_keypoints_recon_body_flash_sac ${EXTRA:-}"
