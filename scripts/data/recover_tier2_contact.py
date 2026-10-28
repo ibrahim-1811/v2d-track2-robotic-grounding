@@ -117,7 +117,11 @@ def contact_hold_index(touched: np.ndarray) -> np.ndarray:
     return source
 
 
-def touched_mask(table: pa.Table, kin: Kinematics) -> tuple[np.ndarray, float]:
+def touched_mask(table: pa.Table, kin: Kinematics, reach_m: float = REACH_M,
+                 centre: np.ndarray | None = None) -> tuple[np.ndarray, float]:
+    """Frames where a palm or foot is within the bounding radius + ``reach_m`` of the object centre.
+
+    ``centre`` overrides the table's object position (Tier 3 tests its cleaned track)."""
     row = {name: table.column(name)[0].as_py() for name in
            ("robot_root_position", "robot_root_wxyz", "robot_joint_names", "robot_joint_positions",
             "ee_link_names", "ee_pose_w", "object_body_position", "object_mesh_radius")}
@@ -128,11 +132,12 @@ def touched_mask(table: pa.Table, kin: Kinematics) -> tuple[np.ndarray, float]:
     fk_palms = np.stack([kin.positions(name, root_pos, root_wxyz, row["robot_joint_names"], q) for name in PALMS], axis=1)
     fk_error = float(np.linalg.norm(fk_palms - palms, axis=-1).max())
     feet = np.stack([kin.positions(name, root_pos, root_wxyz, row["robot_joint_names"], q) for name in FEET], axis=1)
-    centre = np.asarray(row["object_body_position"], float)[:, 0]
+    if centre is None:
+        centre = np.asarray(row["object_body_position"], float)[:, 0]
     radius = float(np.asarray(row["object_mesh_radius"]).reshape(-1)[0])
     parts = np.concatenate([palms, feet], axis=1)
     distance = np.linalg.norm(parts - centre[:, None, :], axis=-1)
-    return (distance < radius + REACH_M).any(axis=1), fk_error
+    return (distance < radius + reach_m).any(axis=1), fk_error
 
 
 def main() -> int:

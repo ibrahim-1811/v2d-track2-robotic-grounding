@@ -724,3 +724,14 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   (365-day placeholder), no MOTD notice. The maintainer expects it to last hours, a day at most, so
   training stays on the cluster; jobs simply cannot run across the window. `train_tier_episode.sbatch`
   now asks for 6 h (runs take ~3 h) so jobs keep starting until ~07:00 that day.
+- **A hand-typed `sbatch` must pass `PREFIX`, `ARM` and `MANIFEST` explicitly.** The lane scripts export
+  them; a bare `--export=ALL,EP=7,PREFIX=t3` falls back to `ARM=stock` and Tier 1's manifest. That trained
+  a Tier 3 run on Tier 1 data (2026-10-28, quarantined); `train_tier_episode.sbatch` now refuses it.
+- **14 Tier 3 references had flipping object tracks** (eps 1, 2, 3, 4, 9, 11, 13, 15, 16, 17, 19, 25, 27, 28:
+  77-422 frames with a > 10 deg/frame step, single steps to 179 deg). Their policies lost the object (mean
+  eval AUC 0.10 vs 0.65 on the other 16; training episodes ended after 56-92 steps, ~90% object
+  termination). `scripts/tier3/clean_tier3_object.py` (Tier 3 data + physics only) unwraps mesh
+  symmetries, drops outliers, applies the t2c contact hold, rate-limits and smooths -> 0-38 such frames.
+  Prefix `t3c`, `training_manifest_tier3c.json`, `FRAME_REFS=outputs/tier3c_frame_references`; the 16
+  unflagged `t3c_epXX_keypoints` are symlinks to the identical-input `t3` runs. Pack t3 and t3c and keep
+  the better whole submission.
