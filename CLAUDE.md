@@ -356,7 +356,10 @@ policy success.
   resolves because `participant_reference_root` falls back to
   `track_2/tier_1_multiview_caption`.
 - `.venvs/kit` lacks `trimesh`, so the packer skips its AUC cross-check
-  (MPPE/SP-SR/MP-SR still cross-check).
+  (MPPE/SP-SR/MP-SR still cross-check). The cluster's `pack_tier.sh` (flash_chord.sif) has trimesh
+  and runs it at tolerance 1e-4; the evaluator's `add_auc` differs from the trajectory-recomputed
+  AUC by up to 0.004 per episode, so it prints a WARNING. Harmless: Kaggle scores the trajectory,
+  and the 2026-10-27 upload carried the same warning yet matched Kaggle exactly.
 
 ## The leaderboard metric is AUC, and it is not MPPE (Step D)
 
@@ -586,6 +589,15 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   Kaggle 57699735-46 AUC 0.80534 / SP-SR 0.86666 / MP-SR 0.86666 / MPPE 10.64053; Tier 2 (t2r)
   57699751-56 AUC 0.48070 / 0.70000 / 0.46666 / 20.97937. The working kit on Ibrahim's PC is
   `~/v2d_submission_kit` (own `.venv`, Kaggle login `ibrahimmemon1811`).
+- **Third Tier 1 upload (2026-10-28, Kaggle 57733449-53, commit a30d854)**: best evaluated arm per
+  episode, now including `keypoints_smooth` (it wins 12 episodes; ep11 0.62 -> 0.83): AUC 0.81219 /
+  SP-SR 0.90000 / MP-SR 0.86666 / MPPE 8.35040, identical to the local pack. The previous pack is
+  kept in `outputs/submission/t1_kaggle_57699735` - `pack_tier.sh` overwrites `outputs/submission/<prefix>/`.
+- **Rules-clean Tier 2 (t2c) packs WORSE than the noisy-input entry** (2026-10-28, local, not uploaded):
+  0.4048 / 0.500 / 0.400 / 30.53 vs t2 0.4419 / 0.600 / 0.500 / 23.33. Own-reference object losses are
+  9 vs 7 episodes and on different episodes (t2c drops 2, 11, 15, 16; t2 drops 3, 19), which looks like
+  run-to-run variance, not the recovery. Do not mix t2 and t2c runs per episode by eval AUC: they are
+  scored against different references.
 
 ## Tier 3 via CARI4D: first measurement (2026-10-27)
 
@@ -686,6 +698,14 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   `masks/<seq>/overlay.jpg`; a refusal writes `masks/<seq>.refused.jpg`. Look at it before CARI4D's
   hour is spent.
 - The Tier 3 manifest skips a reference older than its conversion (re-aligned 12/14 after batch 1).
+- **Tier 3 batch 3 (2026-10-28): 11 of 14 validate** (eps 2, 3, 6, 7, 9, 13, 16, 17, 20, 25, 28); the
+  cluster's validation matches the PC's exactly. Eps 4 (bat) and 27 (woven basket): CARI4D loses the
+  object - one-frame object steps of 1.16 m / 1.29 m (23 / 13 steps > 15 cm in the converted input), and
+  27 sinks 0.52 m under the floor. Ep 19 (cane): one frame 1.04x a joint's URDF velocity limit. All three are
+  trained **coverage-only** (`--accept-failed 11,4,19,27`) so Tier 3 has a policy for all 30; the manifest
+  records the accepted failures. A rerun of `make_tier3_manifest.py` must keep that list.
+- Conversions are not chained after CARI4D: nine finished CARI4D runs sat unconverted for half a day.
+  Queue `tier3_convert.sbatch` afterok on every CARI4D job.
 - **The human-placed scene relabels orientation only** (about the object origin) plus one constant world
   offset to frame 0. A body-frame translation swung with CARI4D's symmetric orientation flips: episode
   28's 0.43 m lever arm turned raw 0.42 m steps into a 0.65 m teleport. 12/14/15 were converted with the
