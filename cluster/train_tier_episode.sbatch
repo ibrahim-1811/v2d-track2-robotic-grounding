@@ -23,6 +23,10 @@ R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
 MANIFEST=${MANIFEST:-training_manifest_verified.json}
 PREFIX=${PREFIX:-t1}
 EP=${EP:?set EP=<episode_index>}
+# A hand-typed resubmit without MANIFEST once trained a Tier 3 run on Tier 1's reference (2026-10-28).
+if [ "$PREFIX" != t1 ] && [ "$MANIFEST" = training_manifest_verified.json ]; then
+  echo "PREFIX=$PREFIX with the default Tier 1 manifest -- pass MANIFEST=training_manifest_<tier>.json"; exit 2
+fi
 FINAL_STEP=349999104
 
 # The login and compute nodes ship Python 3.9: no nested same-quote f-strings.
