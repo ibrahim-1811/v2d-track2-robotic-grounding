@@ -675,12 +675,16 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
 - **The glitch test must run per connected component, not per mask.** For hand-held objects (eps 3, 4,
   17, 25: mug, bat, cone, bottle) the size-aware masks were refused with only 55-184 clean frames out of
   415-858 even though the clean frames looked right (size 0.5-1.6x expected, 0.09-0.75 actor heights
-  away). Likely cause, not yet confirmed on real frames: SAM3 returns the object and the border strip
-  as one mask, so judging the whole mask threw the object away, and `clean` would have kept the strip.
-  `drop_glitch_components` now removes only the strip. Below 25% clean frames an instance is accepted
+  away). `drop_glitch_components` now strips glitch components from a mask instead of judging it
+  whole, and it did fire (mug 521 frames, bat 241, cone 69, bottle 125), **but it barely raised the
+  clean count** (180 / 291 / 81 / 47): most of those frames were still glitches after stripping. What
+  admitted eps 3, 17 and 25 is the low-evidence rule: below 25% clean frames an instance is accepted
   only with >= 30 clean frames AND a median size <= 3x expected AND a median distance <= 1 actor height
-  (`object_low_evidence` in selection.json). Every mask set now writes `masks/<seq>/overlay.jpg`; a
-  refusal writes `masks/<seq>.refused.jpg`. Look at it before CARI4D's hour is spent.
+  (`object_low_evidence` in selection.json); the tracker fills the rest from the best clean frame.
+  **[VERIFIED] by eye (2026-10-28)**: the overlays of 3, 4, 17, 25 and 27 put the object mask on the
+  mug, bat, cone, bottle and basket in every sampled frame. Every mask set now writes
+  `masks/<seq>/overlay.jpg`; a refusal writes `masks/<seq>.refused.jpg`. Look at it before CARI4D's
+  hour is spent.
 - The Tier 3 manifest skips a reference older than its conversion (re-aligned 12/14 after batch 1).
 - **The human-placed scene relabels orientation only** (about the object origin) plus one constant world
   offset to frame 0. A body-frame translation swung with CARI4D's symmetric orientation flips: episode
