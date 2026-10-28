@@ -325,3 +325,127 @@ curl -sSL https://adept-dexterity.github.io/ | grep -o 'Coming soon">Code'
   whole-submission pack or Kaggle; we deliberately do not score Tier 3 rollouts against Tier 1.
 - [UNRESOLVED] Whether `--mem=64G` is enough under JAX/Warp peaks. sacct MaxRSS says ~7.5 GB; pilot on
   one job before changing the default.
+
+## 11. Why episodes 1, 4 and 25 lose the object, and the two pilots (2026-10-28 ~12:00-13:30 CET)
+
+Tier 1 only, so Tier 1 data is used freely here. Evidence: the 180 evaluated rollouts on disk
+(12 arms x 5 unassisted world-1 reps x 3 episodes, `outputs/cluster/t1_ep{01,04,25}_*/eval_349999104/`),
+the instrumented contact rollouts `outputs/diag/t1_ep{01,04,25}_keypoints.json`
+(`scripts/diagnose/diagnose_contact_rollout.py`: contacts, forces, palm/pelvis errors per step), the
+finger logs in `outputs/diag/jitter/t1_ep04_keypoints{,_smooth}_policy.npz` and
+`t1_ep01_keypoints_smooth_policy.npz`, and the training `metrics.jsonl`. Commands in §11.6.
+
+### 11.1 What happens at the failure frame [VERIFIED]
+
+| | ep4 baseball bat | ep25 water bottle | ep1 vacuum |
+|---|---|---|---|
+| Reference | lifted off the floor to 1.32 m by f174, 1.49 m at f228, held high to ~f700; both hands | lifted off a table (0.92 m) from f118 to 1.57 m (f440), right hand alone until the left joins at f219 | upright on its base, pushed to and fro with the left hand (f103-633); 6.5 m path, 0.10 m net travel |
+| Grasp formed? | yes: right hand from f110, left from f155; 1-6 raw contacts per hand | yes: right hand from f111, 2-5 contacts, force falls to 3-24 N by f147 | yes: left hand on the handle f108-234, 3-12 contacts, 60-775 N |
+| Tracking while held | 1-8 cm through a 1.4 m lift (keypoints instrumented run) | 1-5 cm through a 0.33 m lift | 2-9 cm for ~130 frames |
+| In-hand rotation before loss | 50-80 deg | 60-74 deg | 5-24 deg, then 54 deg as it tips |
+| Loss | contacts go to 0 at the top of the lift (f215-235); the bat free-falls (v_z -4.0 m/s at f250) | bottle slides down in the hand (v_z -0.3 to -0.65 m/s at f159-171 while the target still rises), contact lost f175, free fall (-3.8 m/s) | handle contact becomes intermittent from f240, pelvis drifts 20 cm, the vacuum tips over (z 0.38 -> 0.07 by f324) |
+| End state, all 60 reps | on the floor, 60/60 | on the floor 58/60 (one never lifted, stayed on the table) | lying on the floor 58/60 |
+
+- **It is a drop, not a throw.** Peak speeds after loss match free fall from 1-1.5 m; the reference's
+  downward acceleration never exceeds 4.7 m/s^2 (5-frame smoothed, sim time), so the motion itself
+  never asks the object to leave a supporting hand (`refacc.py`). On ep4 the hands do overshoot at the
+  top (object 1.52 m vs 1.47 m target at f225 with no contact), then it falls.
+- **The robot falls after the object** on ep4/ep25 (pelvis 0.5-1.1 m, 30-70 deg off). Irrelevant to MPPE.
+- **MPPE arithmetic**: once dropped, the per-frame error is ~1.1-1.5 m for the rest of the episode
+  (ep4/ep25 references stay 1.3-1.5 m up), so MPPE is roughly (fraction of frames after the drop) x 1.4 m.
+  ep4 drops at f230 of 803 -> ~100 cm. Reaching 20 cm needs the bat held to ~f700.
+
+### 11.2 Why: the policy's hold radius is its training termination radius [VERIFIED]
+
+- **Frames between 10 cm and 25 cm object error** (`linger.py`): every 10-cm-terminated arm
+  (stock, keypoints, seeds, grip, vel, slowvoc, closegrip, smooth; 55 reps per episode) crosses that band in
+  a median **9 / 7 / 8 frames** (ep1 / ep4 / ep25; p90 27 / 19 / 17). term25, whose object termination
+  is 25 cm, lingers there **55-165 / 41-65 / 9-384 frames** and drops the object once past 25 cm. On
+  ep25 two term25 reps carried the bottle at 10-25 cm error for 336 and 384 frames (MPPE 45.8 / 52.4,
+  below the 49.7 do-nothing floor); that is the whole of term25's ep25 gain (mean 73.0 vs 105-126).
+  Training terminates outside this radius, so the policy has never acted there; evaluation does not
+  terminate, and outside the radius it lets go.
+- **On ep4 the hand opens after the slip** (smooth run, `fingers_ts.py`): object error 5.9 -> 10.1 cm at
+  f225-228 with the left hand closed (0.7-0.9 of its closing range), then the left-hand targets swing
+  from +0.8 to -0.5...-0.8 of range at f231-234 and the joints open to ~0 by f237. Slip first, release
+  second; one rollout, consistent with the contact counts in the keypoints run (to 0 at f235).
+- **The palm radius was binding when term25 widened the object radius**: palms sit 10-14 cm off their
+  reference during carries (instrumented runs) against a 15 cm palm termination; term25's palm
+  terminations rose from 17% to 41% on ep25 (final stage, `metrics.jsonl`). Rotation at loss (55-95 deg)
+  also sits at the 86 deg orientation termination.
+- **Training never practises holding late**: final-stage training episodes average 127-201 steps
+  (including the 50-step reset freeze) vs 432-688 on solved episodes, 54-79% end on object termination.
+
+### 11.3 Candidates rejected, with reasons
+
+- **Larger finger residual scale**: range is not the limit. With `action_scale` 10 the residual already
+  spans +-1.5 rad, and the logged finger targets swing between -0.9 and +0.9 of each joint's range
+  (18-47% of finger actions beyond |a| = 9). Grip force is capped by the Dex3 effort limit (1.4 Nm,
+  URDF), which a larger scale cannot raise.
+- **closegrip + smooth**: smooth made ep25 worse (126.4 vs 114.6) and did not move eps 1/4; no mechanism.
+- **ADEPT warm start**: the selected drop runs have no `state_*` (lever 5); about a day of tooling.
+- Physics edits (friction 1.0 against the vacuum base, 1 kg isotropic objects) are out: the evaluator
+  rebuilds the scene from the checkpoint's config, so they would change the scored physics.
+
+### 11.4 The two pilots (queued 2026-10-28 ~12:10 CET, NICE=100, 3 episodes each, EVAL=1)
+
+| Arm | Change (config only, `cluster/train_tier_episode.sbatch`) | Train jobs (ep 1 / 4 / 25) | Eval jobs |
+|---|---|---|---|
+| `keypoints_loose` | keypoints recipe, termination object 0.10 -> **0.50 m**, palm 0.15 -> **0.30 m**, object rotation 1.5 -> **2.5 rad** | 372335 / 372337 / 372339 | 372336 / 372338 / 372340 |
+| `keypoints_loosegrip` | loose + scripted-grip references (`training_manifest_t1grip.json`, alpha 0.6) + `action.finger_residual_scale` 0.15 -> **0.05**: the hand cannot open below ~0.3 closure while the reference holds, nor pre-close above ~0.3 while it does not | 372341 / 372343 / 372345 | 372342 / 372344 / 372346 |
+
+- Not a re-run of term25: term25 moved only the object radius, to 25 cm, and the palm radius then
+  terminated 41% of ep25 episodes. These widen all three radii, to where a dropped object (>= 0.5 m
+  away within ~0.3 s of free fall) still terminates.
+- The evaluator never terminates and the packer scores trajectories, so the thresholds touch training
+  only; `termination` and `action` are immutable roots of the portable export
+  (`pipeline/flash_sac_actor_export.py`), so evaluation uses the 0.05 finger scale it trained with.
+- Checks run: Hydra compose of both arms (`--cfg job --resolve`, every override reaches `env.*`), `bash -n`
+  on the sbatch, `scripts/verify/verify_keypoint_flash_sac.sh` 7 passed / 0 failed (upstream unmodified).
+- Risk: loosegrip caps thumb_0 opposition at +-0.5 rad, and every logged policy swings thumb_0 across its
+  full +-1.05 rad; looser radii may make early tracking sloppier (term25 crossed 10 cm at f160 on ep1, vs
+  ~290 for keypoints). ep1 is the least likely rescue: its fingers stayed closed while the vacuum tipped.
+- Cost ~20 GPU-h. Expected landing (*estimate*): start as the queued Tier 3 / t2 s43 jobs free GPUs, results
+  ~17:30-20:00 CET today; far inside the 2026-10-30 13:00 reservation.
+
+### 11.5 Gate
+
+Mean MPPE over the 5 reps against the current best per episode: **ep1 41.6** (s44; the packed run is
+grip15 at 54.8), **ep4 94.2** (closegrip), **ep25 73.0** (term25); and the mean-AUC change against the
+packed runs (ep1 0.250, ep4 0.167, ep25 0.162). Reps swing 45-107 cm on one policy (ep25 term25), so call a
+win only for a mean at least ~15 cm below the best with 3 of 5 reps below it. Each 10 cm saved on one
+episode is 0.33 cm of tier MPPE. If loose wins and loosegrip wins more, the lock adds; if loosegrip alone
+fails, suspect the thumb_0 cap. An MPPE-better / AUC-worse run is a per-metric selection decision (§6).
+
+### 11.6 Reproduce
+
+```bash
+cd /work/mnidgu2s/project/v2d-track2-robotic-grounding
+SIF="apptainer exec -B $PWD --pwd $PWD containers/flash_chord.sif python"
+$SIF scripts/diagnose/drop/rollouts.py . 1,4,25      # fail frame, lift, peak speed, end state, MPPE per arm/rep
+$SIF scripts/diagnose/drop/thresholds.py . 1,4,25    # first frame past 10/25/50 cm, frame on the floor
+$SIF scripts/diagnose/drop/linger.py .               # frames between 10 and 25 cm: 10-cm arms vs term25
+$SIF scripts/diagnose/drop/refacc.py .               # reference speed/acceleration in sim time
+python3 scripts/diagnose/drop/contact_fine.py . 25 95 215 4   # contacts/forces/palm/pelvis around the loss (also 4 100 290 5, 1 90 340 6)
+python3 scripts/diagnose/drop/fingers_ts.py outputs/diag/jitter/t1_ep04_keypoints_smooth_policy.npz 150 250 3
+# pilots: queue state, then results once the evals land
+squeue -u $USER -o "%.10i %.30j %.8T %R" | grep loose
+for r in outputs/cluster/t1_ep{01,04,25}_keypoints_loose{,grip}; do python3 - "$r" <<'PY'
+import glob, json, sys
+m = [json.load(open(j))["metrics"] for j in sorted(glob.glob(sys.argv[1] + "/eval_349999104/rep*.json"))]
+if m: print(sys.argv[1].split("/")[-1], "AUC %.3f" % (sum(x["add_auc"] for x in m) / len(m)),
+            "MPPE %.1f" % (sum(x["mppe_cm"] for x in m) / len(m)), [round(x["mppe_cm"], 1) for x in m])
+PY
+done
+apptainer exec --cleanenv --no-mount home,cwd -B "$PWD":/r containers/flash_chord.sif python \
+  /r/scripts/evaluate/decompose_auc_loss.py --root /r --run-fmt t1_ep%02d_keypoints_loose --episodes 1,4,25
+$SIF scripts/diagnose/drop/linger.py .               # does the new arm hold between 10 and 50 cm?
+```
+
+### 11.7 Gaps
+
+- [GAP] No finger log for ep25, and none for the packed runs (grip15, closegrip, term25): the finger
+  evidence is the ep4 keypoints/smooth and ep1 smooth rollouts only. `cluster/diagnose_jitter.sbatch` can
+  log them (`RUNS=t1_ep25_keypoints_term25 ...`) when an A100 is free.
+- [UNRESOLVED] Whether a policy trained to tolerate 10-50 cm uses the room to hold on rather than to
+  track loosely. term25 is the only evidence, and it says hold on.

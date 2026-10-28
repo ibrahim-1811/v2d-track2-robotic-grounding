@@ -80,6 +80,26 @@ case "$ARM" in
     export CONFIGS=keypoints
     EXTRA="objective=keypoints_recon_body curriculum=keypoints_smooth_recon_body_flash_sac objective.action_rate_l2_weight=-0.01 objective.action_l2_weight=-0.0001 action.residual_scale=0.075 ${EXTRA:-}"
     ;;
+  keypoints_loose|keypoints_loosegrip)
+    # Drop episodes 1/4/25 (docs/findings/IMPROVEMENT_PLAN_2026-10-28.md section 11): a policy
+    # lets go of the object within 4-15 frames of leaving the training termination set (10 cm), and
+    # term25 held it between 10 and 25 cm for 40-380 frames, then dropped it at 25 cm. So widen the whole
+    # set the carry lives in: object 0.10 -> 0.50 m, palm 0.15 -> 0.30 m (palms already sit 10-14 cm off
+    # during carries, palm terminations rose 17% -> 41% under term25), object rotation 1.5 -> 2.5 rad
+    # (55-95 deg at loss). Evaluation never terminates and the packer scores trajectories, so only
+    # training sees these thresholds.
+    # loosegrip adds a grip lock: the scripted-grip references (MANIFEST=training_manifest_t1grip.json,
+    # fingers at 0.6 of the closing limit during human contact) with the finger residual cut 0.15 -> 0.05,
+    # so the hand cannot open below ~0.3 closure while the reference holds (the ep4 rollouts open the
+    # hand 3-6 frames after the slip) and cannot pre-close above ~0.3 while it does not.
+    export CONFIGS=keypoints
+    LOOSE="termination.object_position_threshold=0.5 termination.palm_position_threshold=0.3 termination.object_orientation_threshold=2.5"
+    if [ "$ARM" = keypoints_loosegrip ]; then
+      [ "$ADAPTER" = adapter_out_grip ] || { echo "ARM=keypoints_loosegrip needs MANIFEST=training_manifest_t1grip.json (got adapter $ADAPTER)"; exit 2; }
+      LOOSE="$LOOSE action.finger_residual_scale=0.05"
+    fi
+    EXTRA="objective=keypoints_recon_body curriculum=keypoints_recon_body_flash_sac $LOOSE ${EXTRA:-}"
+    ;;
   keypoints_vel)
     export CONFIGS=keypoints
     EXTRA="objective=velocity_keypoints_recon_body curriculum=velocity_keypoints_recon_body_flash_sac ${EXTRA:-}"
