@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu4
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --mem=64G   # peak RSS is 7.6-8.2 GB; 128G let only 3 jobs share a 4-GPU, 510 GB node
 #SBATCH --time=06:00:00
 #SBATCH --output=/work/mnidgu2s/project/v2d-track2-robotic-grounding/logs/train_%x_%j.out
 
