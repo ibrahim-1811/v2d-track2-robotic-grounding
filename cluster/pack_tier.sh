@@ -21,7 +21,9 @@ TIER=${1:?usage: COMMIT_URL=... bash cluster/pack_tier.sh <1|2|3>}
 COMMIT_URL=${COMMIT_URL:?set COMMIT_URL to the GitHub /commit/<sha> that trained these policies}
 PREFIX=${PREFIX:-t$TIER}
 FRAME_REFS=${FRAME_REFS:-}
-OUT=$R/outputs/submission/$PREFIX
+# OUT_NAME keeps packs of the same prefix apart (default: the prefix; that folder is overwritten).
+OUT_NAME=${OUT_NAME:-$PREFIX}
+OUT=$R/outputs/submission/$OUT_NAME
 REF_ARGS=()
 [ -n "$FRAME_REFS" ] && REF_ARGS=(--frame-references "/r/$FRAME_REFS")
 
@@ -29,6 +31,6 @@ cd "$R"
 python3 scripts/evaluate/assemble_submission.py --prefix "$PREFIX" -o "$OUT/results"
 apptainer exec --cleanenv --no-mount home,cwd -B "$R":/r --env PYTHONPATH=/r/.venvs/kit_site \
   --pwd /r/outputs/kit/v2d_submission_kit "$R/containers/flash_chord.sif" \
-  python tools/pack_submission.py --track "track_2_tier$TIER" --results "/r/outputs/submission/$PREFIX/results" \
+  python tools/pack_submission.py --track "track_2_tier$TIER" --results "/r/outputs/submission/$OUT_NAME/results" \
     --dataset-root /r/data/v2d_challenge "${REF_ARGS[@]}" --code-commit "$COMMIT_URL" \
-    -o "/r/outputs/submission/$PREFIX/track2_tier$TIER.csv" 2>&1 | grep -v pthread_setaffinity
+    -o "/r/outputs/submission/$OUT_NAME/track2_tier$TIER.csv" 2>&1 | grep -v pthread_setaffinity
