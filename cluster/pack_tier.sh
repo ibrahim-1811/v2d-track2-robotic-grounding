@@ -23,12 +23,14 @@ PREFIX=${PREFIX:-t$TIER}
 FRAME_REFS=${FRAME_REFS:-}
 # OUT_NAME keeps packs of the same prefix apart (default: the prefix; that folder is overwritten).
 OUT_NAME=${OUT_NAME:-$PREFIX}
+# SELECT=balanced: lowest mean MPPE within 0.02 mean AUC of the best (assemble_submission.py --select).
+SELECT=${SELECT:-auc}
 OUT=$R/outputs/submission/$OUT_NAME
 REF_ARGS=()
 [ -n "$FRAME_REFS" ] && REF_ARGS=(--frame-references "/r/$FRAME_REFS")
 
 cd "$R"
-python3 scripts/evaluate/assemble_submission.py --prefix "$PREFIX" -o "$OUT/results"
+python3 scripts/evaluate/assemble_submission.py --prefix "$PREFIX" --select "$SELECT" -o "$OUT/results"
 apptainer exec --cleanenv --no-mount home,cwd -B "$R":/r --env PYTHONPATH=/r/.venvs/kit_site \
   --pwd /r/outputs/kit/v2d_submission_kit "$R/containers/flash_chord.sif" \
   python tools/pack_submission.py --track "track_2_tier$TIER" --results "/r/outputs/submission/$OUT_NAME/results" \

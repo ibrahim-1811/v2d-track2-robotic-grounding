@@ -8,7 +8,13 @@ world-1 runs of NVIDIA's unchanged evaluator. Selection is pre-declared:
 
 1. pick the candidate with the highest **mean** ``add_auc`` over its runs
    (ties: lower mean MPPE). Choosing among learned checkpoints is allowed; a
-   frozen-object trajectory is not (FAQ: trajectories from learned policies);
+   frozen-object trajectory is not (FAQ: trajectories from learned policies).
+   ``--select balanced`` instead takes the lowest mean MPPE among candidates
+   within ``--auc-margin`` (0.02) of that best mean AUC: the 75th-percentile
+   standard error of a 5-run mean AUC is 0.016 (154 Tier 1 evaluations,
+   2026-10-29), so those AUCs are indistinguishable and MPPE decides. The kit
+   requires the same CSV in all four metric competitions of a tier, so the
+   trade-off has to live inside one CSV, never in a per-metric upload;
 2. submit **rep 1** of that candidate's evaluation, whatever its score -- never
    the best of the N rollouts, which would not reproduce.
 
@@ -80,6 +86,9 @@ def main() -> int:
     parser.add_argument("-o", "--out", type=Path, required=True)
     parser.add_argument("--min-reps", type=int, default=3, help="ignore evaluations with fewer runs")
     parser.add_argument("--episodes", type=int, default=30)
+    parser.add_argument("--select", choices=("auc", "balanced"), default="auc",
+                        help="auc: highest mean AUC; balanced: lowest mean MPPE within --auc-margin of it")
+    parser.add_argument("--auc-margin", type=float, default=0.02, help="balanced only: mean-AUC margin")
     args = parser.parse_args()
 
     found = candidates(args.prefix, args.min_reps)
@@ -96,10 +105,14 @@ def main() -> int:
     for episode in range(args.episodes):
         ranked = sorted(found[episode], key=lambda c: (-c["mean_auc"], c["mean_mppe_cm"]))
         best = ranked[0]
+        if args.select == "balanced":
+            best = min((c for c in ranked if c["mean_auc"] >= ranked[0]["mean_auc"] - args.auc_margin),
+                       key=lambda c: (c["mean_mppe_cm"], -c["mean_auc"]))
         rep1 = best["reps"][0]
         shutil.copy2(rep1["trajectory"], args.out / f"episode_{episode:06d}.parquet")
         shutil.copy2(rep1["report"], args.out / f"episode_{episode:06d}.json")
-        others = "  ".join(f"{c['run']}@{c['step'] // 1_000_000}M={c['mean_auc']:.3f}" for c in ranked[1:])
+        others = "  ".join(f"{c['run']}@{c['step'] // 1_000_000}M={c['mean_auc']:.3f}/{c['mean_mppe_cm']:.1f}c"
+                           for c in ranked if c is not best)
         print(f"{episode:2d}  {best['run']:34s} {best['step']:10d} {best['mean_auc']:8.4f} "
               f"{rep1['metrics']['add_auc']:8.4f} {rep1['metrics']['mppe_cm']:8.2f}c  {others}")
         selection.append({
@@ -107,7 +120,9 @@ def main() -> int:
             "checkpoint_sha256": rep1["checkpoint_sha256"], "trajectory": str(rep1["trajectory"].relative_to(REPO)),
             "mean_auc": best["mean_auc"], "mean_mppe_cm": best["mean_mppe_cm"], "reps": len(best["reps"]),
             "rep1_metrics": {k: rep1["metrics"][k] for k in ("add_auc", "mppe_cm", "spider_sr_uncentered", "maniptrans_sr")},
-            "candidates": [{"run": c["run"], "step": c["step"], "mean_auc": c["mean_auc"], "reps": len(c["reps"])} for c in ranked],
+            "select": args.select,
+            "candidates": [{"run": c["run"], "step": c["step"], "mean_auc": c["mean_auc"], "mean_mppe_cm": c["mean_mppe_cm"],
+                            "reps": len(c["reps"])} for c in ranked],
         })
     (args.out.parent / "selection.json").write_text(json.dumps(selection, indent=1) + "\n")
     mean = statistics.fmean(s["rep1_metrics"]["add_auc"] for s in selection)

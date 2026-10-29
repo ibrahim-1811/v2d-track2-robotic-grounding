@@ -593,6 +593,13 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   episode, now including `keypoints_smooth` (it wins 12 episodes; ep11 0.62 -> 0.83): AUC 0.81219 /
   SP-SR 0.90000 / MP-SR 0.86666 / MPPE 8.35040, identical to the local pack. The previous pack is
   kept in `outputs/submission/t1_kaggle_57699735` - `pack_tier.sh` overwrites `outputs/submission/<prefix>/`.
+- **One CSV per tier, sent to all four metric competitions** (kit `tracks/track_2/README.md`: "Use the
+  same CSV for all four competitions within that tier"). A per-metric pack (e.g. MPPE-picked, uploaded
+  only to the MPPE competition) breaks that rule. The legal version is `SELECT=balanced` in
+  `pack_tier.sh`: lowest mean MPPE within 0.02 mean AUC of the best. Tier 1 (2026-10-29, official packer):
+  0.8285 / 0.900 / 0.8667 / **4.32** vs 0.8275 / 0.900 / 0.8667 / 8.79 by AUC alone (4 episodes change,
+  most of it ep25). Averaged over runs instead of rep 1 it is MPPE ~5.3. Tier 2 (t2c) gains nothing on the
+  clean reference (0.4765 / 0.733 / 0.500 / 17.75), although its own reference suggested MPPE 15.6.
 - **Rules-clean Tier 2 (t2c) packs WORSE than the noisy-input entry** (2026-10-28, local, not uploaded):
   0.4048 / 0.500 / 0.400 / 30.53 vs t2 0.4419 / 0.600 / 0.500 / 23.33. Own-reference object losses are
   9 vs 7 episodes and on different episodes (t2c drops 2, 11, 15, 16; t2 drops 3, 19), which looks like
