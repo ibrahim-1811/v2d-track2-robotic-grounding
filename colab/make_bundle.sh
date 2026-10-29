@@ -31,16 +31,18 @@ SHA=$(git -C "$R" rev-parse HEAD)
 mkdir -p "$OUT"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-echo "$SHA" >"$tmp/BUNDLE_COMMIT"
 
-git -C "$R" archive --format=tar --prefix=v2d/ -o "$TAR" HEAD
-# ,S: prefix member names but leave symlink targets alone.
-tar -rf "$TAR" -C "$tmp" --transform 's,^,v2d/,S' BUNDLE_COMMIT
-tar -rf "$TAR" -C "$R" --transform 's,^,v2d/,S' --exclude=.git --exclude=__pycache__ \
+# One GNU-format archive: appending to git archive's ustar output cannot store the assets'
+# 200+ character paths. ,S: prefix member names but leave symlink targets alone.
+mkdir "$tmp/v2d"
+git -C "$R" archive HEAD | tar -x -C "$tmp/v2d"
+echo "$SHA" >"$tmp/v2d/BUNDLE_COMMIT"
+tar --format=gnu -cf "$TAR" -C "$tmp" v2d
+tar --format=gnu -rf "$TAR" -C "$R" --transform 's,^,v2d/,S' --exclude=.git --exclude=__pycache__ \
   --exclude="$FCREL/outputs" --exclude="$FCREL/logs" "$FCREL" "$ASREL"
 for tree in $TREES; do
   test -d "$R/data/$tree" || { echo "missing data/$tree"; exit 2; }
-  tar -rf "$TAR" -C "$R" --transform 's,^,v2d/,S' "data/$tree"
+  tar --format=gnu -rf "$TAR" -C "$R" --transform 's,^,v2d/,S' "data/$tree"
 done
 echo "commit $SHA, trees: $TREES"
 ls -lh "$TAR"
