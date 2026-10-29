@@ -600,6 +600,9 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   0.8285 / 0.900 / 0.8667 / **4.32** vs 0.8275 / 0.900 / 0.8667 / 8.79 by AUC alone (4 episodes change,
   most of it ep25). Averaged over runs instead of rep 1 it is MPPE ~5.3. Tier 2 (t2c) gains nothing on the
   clean reference (0.4765 / 0.733 / 0.500 / 17.75), although its own reference suggested MPPE 15.6.
+- **Fifth Tier 1 upload (2026-10-29 ~22:45, Kaggle 57783410-17, commit f63fff6, `outputs/submission/t1_balanced`)**:
+  AUC 0.82849 / SP-SR 0.90000 / MP-SR 0.86666 / MPPE 4.32105, identical to the local pack. It beats every
+  earlier Tier 1 upload on all four metrics, so select it as the final in all four Tier 1 competitions.
 - **Rules-clean Tier 2 (t2c) packs WORSE than the noisy-input entry** (2026-10-28, local, not uploaded):
   0.4048 / 0.500 / 0.400 / 30.53 vs t2 0.4419 / 0.600 / 0.500 / 23.33. Own-reference object losses are
   9 vs 7 episodes and on different episodes (t2c drops 2, 11, 15, 16; t2 drops 3, 19), which looks like
