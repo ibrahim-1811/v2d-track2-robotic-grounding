@@ -97,7 +97,7 @@ TRAIN_CMD=(python -m pipeline.flash_sac_train_entry
 # $EXTRA stays unquoted: it is a space-separated list of Hydra overrides.
 if [ "$NATIVE" = 1 ]; then
   source "$R/cluster/native_paths.sh"
-  [ -n "$CONFIGS" ] && ln -sfn "$R/configs/$CONFIGS" /v2d/configs
+  [ -n "$CONFIGS" ] && native_link "$R/configs/$CONFIGS" /v2d/configs
   (cd /workspace && PYTHONPATH=/v2d/repo:/workspace/src XLA_PYTHON_CLIENT_PREALLOCATE=false \
      WARP_CACHE_PATH="${V2D_WARP_CACHE:-/out/warp_cache}" exec "${TRAIN_CMD[@]}" $EXTRA) &
 else
