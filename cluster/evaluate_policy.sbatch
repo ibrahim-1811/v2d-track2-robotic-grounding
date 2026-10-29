@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu
 # V100 nodes wr14-19 cannot run the SONIC controller (onnxruntime CUDA: "CUBLAS failure 8:
 # architectural feature absent", sm_70), so gpu-partition evaluations use its A100 nodes.
-#SBATCH --exclude=wr[14-19]
+#SBATCH --exclude=wr[14-19,25]   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -20,13 +20,20 @@
 #
 #   RUN=ep0_stock_nvidia_recipe STEP=349999104 sbatch cluster/evaluate_policy.sbatch
 #   RUN=... STEP=... REPEATS=5 FLOOR=0.3769 sbatch cluster/evaluate_policy.sbatch
+#
+# V2D_NATIVE=1 (Colab, colab/run_colab.sh) runs the evaluator without Apptainer, like
+# cluster/train_flash_sac.sbatch.
 set -uo pipefail
 
-R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
+R=${V2D_ROOT:-/work/mnidgu2s/project/v2d-track2-robotic-grounding}
 SIF=$R/containers/flash_chord.sif
 FC=$R/official/video_to_data/robotic_grounding/flash_chord
 ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
 OUT=$R/outputs/cluster
+NATIVE=${V2D_NATIVE:-0}
+if [ "$NATIVE" = 1 ]; then
+  : "${SLURM_JOB_ID:=$$}" "${SLURM_CPUS_PER_TASK:=$(nproc)}"
+fi
 
 RUN=${RUN:?set RUN=<run tag under outputs/cluster>}
 STEP=${STEP:?set STEP=<checkpoint step>}
@@ -59,7 +66,14 @@ for tree in "$R"/data/adapter_out*; do
   [ -d "$tree" ] && DATA_BINDS+=(-B "$tree:/work/$(basename "$tree"):ro")
 done
 
+[ "$NATIVE" = 1 ] && source "$R/cluster/native_paths.sh"
+
 run() {
+  if [ "$NATIVE" = 1 ]; then
+    (cd /workspace && PYTHONPATH=/workspace/src XLA_PYTHON_CLIENT_PREALLOCATE=false \
+       WARP_CACHE_PATH="${V2D_WARP_CACHE:-/out/warp_cache}" OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" "$@")
+    return
+  fi
   apptainer exec --nv --cleanenv \
     --no-mount bind-paths,home,cwd \
     -B "$FC":/workspace \

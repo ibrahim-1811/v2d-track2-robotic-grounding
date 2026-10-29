@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=v2d-tier
 #SBATCH --partition=gpu4
+#SBATCH --exclude=wr25   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G   # peak RSS is 7.6-8.2 GB; 128G let only 3 jobs share a 4-GPU, 510 GB node
@@ -19,7 +20,7 @@
 # already exists exits at once, so re-queueing a lane resumes it.
 set -euo pipefail
 
-R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
+R=${V2D_ROOT:-/work/mnidgu2s/project/v2d-track2-robotic-grounding}
 MANIFEST=${MANIFEST:-training_manifest_verified.json}
 PREFIX=${PREFIX:-t1}
 EP=${EP:?set EP=<episode_index>}

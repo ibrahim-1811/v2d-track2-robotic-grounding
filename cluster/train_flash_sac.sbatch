@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=v2d-train
 #SBATCH --partition=gpu4
+#SBATCH --exclude=wr25   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G   # peak RSS is 7.6-8.2 GB; 128G let only 3 jobs share a 4-GPU, 510 GB node
@@ -26,12 +27,20 @@
 # A NaN watchdog stops the job at the first non-finite metrics line: a diverged FlashSAC
 # run never recovers (Episode 7's seed-42 run trained 6.5 h on NaN). Resume from the last
 # state_*.safetensors before the NaN with training.resume=true training.checkpoint_path=...
+#
+# V2D_NATIVE=1 (Colab, colab/run_colab.sh) runs the same command without Apptainer, in a machine
+# whose Python is flash_chord's own uv environment; cluster/native_paths.sh recreates the
+# container's paths as symlinks. V2D_ROOT points at the checkout there.
 set -euo pipefail
 
-R=/work/mnidgu2s/project/v2d-track2-robotic-grounding
+R=${V2D_ROOT:-/work/mnidgu2s/project/v2d-track2-robotic-grounding}
 SIF=$R/containers/flash_chord.sif
 FC=$R/official/video_to_data/robotic_grounding/flash_chord
 ASSETS=$R/official/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets
+NATIVE=${V2D_NATIVE:-0}
+if [ "$NATIVE" = 1 ]; then
+  : "${SLURM_JOB_NAME:=v2d-native}" "${SLURM_JOB_ID:=$$}"
+fi
 
 TAG=${TAG:-ep0_stock_nvidia_recipe}
 SEQ=${SEQ:-2026-06-04_14-16-23_tall_bar_stool_tip_up_04}
@@ -65,42 +74,51 @@ test -f "$R/data/${ADAPTER}/whole_body/soma/sequence_id=${SEQ}/robot_name=g1/dat
 
 echo "job $SLURM_JOB_ID on $(hostname), tag=$TAG seq=$SEQ support=$SUPPORT seed=$SEED adapter=$ADAPTER configs='$CONFIGS' extra='$EXTRA'"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
-git -C "$R" rev-parse --short HEAD
-git -C "$R/official/video_to_data" rev-parse --short HEAD
+# A Colab bundle is a git archive: no .git, its commit is in BUNDLE_COMMIT.
+git -C "$R" rev-parse --short HEAD 2>/dev/null || cat "$R/BUNDLE_COMMIT"
+git -C "$R/official/video_to_data" rev-parse --short HEAD 2>/dev/null || echo "official: bundled flash_chord"
 
-# Site bind paths are switched off so /work inside the container is only what we mount:
-# the parquets bake absolute /work/adapter_out/... paths (CLAUDE.md, Step B).
-apptainer exec --nv --cleanenv \
-  --no-mount bind-paths,home,cwd \
-  -B "$FC":/workspace \
-  -B "$ASSETS":/v2d/assets:ro \
-  "${DATA_BINDS[@]}" \
-  -B "$R/pipeline":/v2d/repo/pipeline:ro \
-  "${CONFIG_ARGS[@]}" \
-  -B "$OUT":/out \
-  -B "$OUT/tmp/$SLURM_JOB_ID":/tmp \
-  --env HOME=/tmp \
-  --env PYTHONPATH=/v2d/repo:/workspace/src \
-  --env XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  --env WARP_CACHE_PATH=/out/warp_cache \
-  --pwd /workspace \
-  "$SIF" \
-  python -m pipeline.flash_sac_train_entry \
-    "${CONFIG_DIR_ARGS[@]}" \
-    experiment=g1_recon_body_flash_sac \
-    "task.parquet='${PARQUET}'" \
-    scene.world_count=2048 \
-    scene.support="$SUPPORT" \
-    training.total_environment_steps=349999104 \
-    training.updates_per_collection=4.0 \
-    training.replay.capacity=10000000 \
-    training.checkpoint.save_replay=false \
-    training.seed="$SEED" \
-    reset.seed="$SEED" \
-    logging.mode=disabled \
-    output_dir="/out/$TAG" \
-    hydra.run.dir="/out/$TAG/hydra" \
-    $EXTRA &
+TRAIN_CMD=(python -m pipeline.flash_sac_train_entry
+  "${CONFIG_DIR_ARGS[@]}"
+  experiment=g1_recon_body_flash_sac
+  "task.parquet='${PARQUET}'"
+  scene.world_count=2048
+  scene.support="$SUPPORT"
+  training.total_environment_steps=349999104
+  training.updates_per_collection=4.0
+  training.replay.capacity=10000000
+  training.checkpoint.save_replay=false
+  training.seed="$SEED"
+  reset.seed="$SEED"
+  logging.mode=disabled
+  output_dir="/out/$TAG"
+  hydra.run.dir="/out/$TAG/hydra")
+
+# $EXTRA stays unquoted: it is a space-separated list of Hydra overrides.
+if [ "$NATIVE" = 1 ]; then
+  source "$R/cluster/native_paths.sh"
+  [ -n "$CONFIGS" ] && ln -sfn "$R/configs/$CONFIGS" /v2d/configs
+  (cd /workspace && PYTHONPATH=/v2d/repo:/workspace/src XLA_PYTHON_CLIENT_PREALLOCATE=false \
+     WARP_CACHE_PATH="${V2D_WARP_CACHE:-/out/warp_cache}" exec "${TRAIN_CMD[@]}" $EXTRA) &
+else
+  # Site bind paths are switched off so /work inside the container is only what we mount:
+  # the parquets bake absolute /work/adapter_out/... paths (CLAUDE.md, Step B).
+  apptainer exec --nv --cleanenv \
+    --no-mount bind-paths,home,cwd \
+    -B "$FC":/workspace \
+    -B "$ASSETS":/v2d/assets:ro \
+    "${DATA_BINDS[@]}" \
+    -B "$R/pipeline":/v2d/repo/pipeline:ro \
+    "${CONFIG_ARGS[@]}" \
+    -B "$OUT":/out \
+    -B "$OUT/tmp/$SLURM_JOB_ID":/tmp \
+    --env HOME=/tmp \
+    --env PYTHONPATH=/v2d/repo:/workspace/src \
+    --env XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    --env WARP_CACHE_PATH=/out/warp_cache \
+    --pwd /workspace \
+    "$SIF" "${TRAIN_CMD[@]}" $EXTRA &
+fi
 TRAIN=$!
 
 # AUTO_RESUME=N lets the watchdog resubmit this run up to N times from the newest
@@ -114,7 +132,9 @@ while kill -0 "$TRAIN" 2>/dev/null; do
     wait "$TRAIN" || true
     state=$(ls "$OUT/$TAG"/state_*.safetensors 2>/dev/null | sed -E 's/.*state_([0-9]+)\.safetensors/\1/' \
             | awk -v n="$nan_step" '$1 < n' | sort -n | tail -1)
-    if [ "$AUTO_RESUME" -gt 0 ] && [ -n "$state" ]; then
+    if [ "$NATIVE" = 1 ] && [ -n "$state" ]; then
+      echo "NaN watchdog: resume with SEED=$((SEED + 1)) EXTRA='training.resume=true training.checkpoint_path=/out/$TAG/state_${state}.safetensors'"
+    elif [ "$AUTO_RESUME" -gt 0 ] && [ -n "$state" ]; then
       base=$(sed -E 's/training\.(resume|checkpoint_path)=[^ ]*//g' <<<"$EXTRA")
       jid=$(TAG="$TAG" SEQ="$SEQ" SUPPORT="$SUPPORT" ADAPTER="$ADAPTER" CONFIGS="$CONFIGS" \
             SEED=$((SEED + 1)) AUTO_RESUME=$((AUTO_RESUME - 1)) \

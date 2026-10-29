@@ -2,7 +2,7 @@
 #SBATCH --job-name=v2d-t3-masks
 #SBATCH --partition=gpu
 # SAM3 needs only PyTorch, so it runs on the V100 nodes the FlashCHORD and CARI4D jobs cannot use.
-#SBATCH --exclude=wr[15-16,19-25]
+#SBATCH --exclude=wr[14-19,25]   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G

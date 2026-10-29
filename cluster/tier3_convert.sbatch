@@ -2,7 +2,7 @@
 #SBATCH --job-name=v2d-t3-convert
 #SBATCH --partition=gpu
 # cari4d.sif's Warp is a CUDA 13 build: sm_75+ only, so not the V100 (sm_70) nodes wr14-19.
-#SBATCH --exclude=wr[14-19]
+#SBATCH --exclude=wr[14-19,25]   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G

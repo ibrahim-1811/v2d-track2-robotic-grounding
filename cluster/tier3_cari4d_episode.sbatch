@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=v2d-t3-cari4d
 #SBATCH --partition=gpu
-#SBATCH --exclude=wr[14-19]
+#SBATCH --exclude=wr[14-19,25]   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G

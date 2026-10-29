@@ -2,7 +2,7 @@
 #SBATCH --job-name=v2d-media
 #SBATCH --partition=gpu
 # V100 nodes wr14-19 cannot run the SONIC controller (see evaluate_policy.sbatch).
-#SBATCH --exclude=wr[14-19]
+#SBATCH --exclude=wr[14-19,25]   # cap: at most 5 GPU nodes, wr20-24 (user, 2026-10-29)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

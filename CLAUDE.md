@@ -745,3 +745,23 @@ Full write-up: `docs/findings/KEYPOINT_OBJECTIVE.md`.
   Prefix `t3c`, `training_manifest_tier3c.json`, `FRAME_REFS=outputs/tier3c_frame_references`; the 16
   unflagged `t3c_epXX_keypoints` are symlinks to the identical-input `t3` runs. Pack t3 and t3c and keep
   the better whole submission.
+
+## Colab as a second worker (2026-10-29)
+
+- **Ibrahim's Colab Pro (200 compute units) runs the cluster's own scripts natively.** Measured: A100-SXM4-80GB,
+  driver 580.82 (FlashCHORD needs >= 580), 12 vCPU, 167 GB RAM, **8.88 units/hour** -> ~22 A100-hours, about
+  7 full 350M runs alone. A CPU-only runtime has no `nvidia-smi`: pick Runtime -> Change runtime type -> A100.
+- **No container on Colab.** `colab/setup_colab.sh` rebuilds flash_chord's `uv.lock` environment (CPython
+  3.11.15, `uv sync --frozen --extra train`, exactly how `docker/Dockerfile` builds the image). Colab's own
+  Python is 3.13, which flash_chord's `requires-python <3.13` rejects. jax 0.10.2 (CUDA 13 plugin) and Warp
+  1.14 were confirmed on the A100 before anything was built.
+- **`V2D_NATIVE=1` + `V2D_ROOT`** make `train_flash_sac.sbatch`, `train_tier_episode.sbatch` and
+  `evaluate_policy.sbatch` run without Apptainer; `cluster/native_paths.sh` recreates the container paths
+  (`/workspace`, `/v2d/assets`, `/v2d/repo`, `/work/<tree>`, `/out`) as symlinks (Colab is root). The
+  Apptainer path is unchanged. Same recipe, run names and `eval_<step>/rep*` layout, so copied-back runs
+  enter `assemble_submission.py` like any cluster run. Native mode never auto-resumes (no sbatch).
+- Flow: `PREFIX=t2c bash colab/make_bundle.sh` (git archive HEAD + flash_chord + assets + that tier's
+  trees, ~2.9 GB, refuses uncommitted changes) -> Ibrahim's PC -> `MyDrive/v2d/` -> `colab/v2d_colab.ipynb`
+  (setup, smoke, `queue_colab.sh` with LANES runs per GPU) -> `results_*.tar` (no `state_*`) -> cluster
+  `outputs/cluster/`. Outputs and logs are written to Drive; Colab Pro has no background execution, so the
+  tab must stay open.
